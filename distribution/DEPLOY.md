@@ -8,12 +8,16 @@ The module repo is **private**, so the GitHub manifest URL won't install for any
 
 The simplest way to start. No auto-update, but zero setup.
 
-1. Grab the release zip: https://github.com/xtrapklz/ddb-integrator/releases/latest (the `module.zip` asset), or rebuild it any time with `zip -r module.zip module.json scripts/main.js README.md`.
-2. Post it as a **patrons-only** download on Patreon.
+1. Build the patron zip — **wrapped in a `ddb-integrator/` folder** so it extracts cleanly. From your Foundry `Data/modules/` directory:
+   ```
+   zip -r ddb-integrator-v0.1.0.zip ddb-integrator/module.json ddb-integrator/scripts/main.js ddb-integrator/README.md
+   ```
+   > Note: this folder-wrapped zip is for **manual** install. It is *different* from the root-level `module.zip` attached to the GitHub release, which is what Foundry's *manifest* installer (Option B) expects. Don't hand patrons the release `module.zip` for manual install — they'd get loose files.
+2. Post `ddb-integrator-v0.1.0.zip` as a **patrons-only** download on Patreon.
 3. Tell patrons to install it manually:
-   > Download `module.zip`, then extract it into your Foundry `Data/modules/` folder so you end up with `Data/modules/ddb-integrator/module.json`. Restart Foundry and enable **DDB Integrator**.
+   > Download the zip and extract it into your Foundry **Data/modules/** folder, so you end up with `Data/modules/ddb-integrator/module.json`. Restart Foundry, then enable **DDB Integrator** under *Manage Modules*.
 
-When you ship an update, post the new zip; patrons re-download and replace the folder.
+When you ship an update, bump the version and post the new zip; patrons re-download and replace the folder.
 
 ---
 

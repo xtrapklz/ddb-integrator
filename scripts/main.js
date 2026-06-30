@@ -374,6 +374,7 @@ async function present(p) {
       img: p.img || '', actorImg: actor?.img || '', formula: p.formula || '',
       target: targets[0] || null, targets,   // PRESENTATION ONLY — first frames the impact cinematic; the card lists all.
     };
+    if (p.ddb && card.kind === 'attack') { try { recordAttackHits(card); } catch (e) {} }   // remember hit/miss for the damage tray
     const styled = await postPublic(card);   // the unified chat card ALWAYS posts (keeps the chat log), session live or not
     // D&D Beyond DAMAGE rolls have no native dnd5e card, so synthesize one (with the system's Apply tray) for the GM.
     // The stylized card's id rides on the damage card so the apply hook can update its displayed total to the applied amount.
@@ -436,6 +437,8 @@ async function synthDamageCard(card, stylizedId) {
     const total = Math.max(0, Math.round(Number(card.total) || 0));
     const flags = synthFlags(card, 'damage');
     if (stylizedId) flags[NS].stylizedId = stylizedId;   // so the apply hook can update the stylized card's total
+    const miss = missedMultipliers(card);   // pre-select ×0 on the tray for targets the attack missed (seeded in the render hook)
+    if (miss.length) flags[NS].multipliers = miss;
     console.log('[ddbx-synth] damage card', { total, dtype });
     await DamageRoll.build(
       { rolls: [{ parts: [String(total)], options: { type: dtype, types: dtype ? [dtype] : [], properties: [] } }], hookNames: ['damage'] },
@@ -500,6 +503,34 @@ function buildNativeTargets(targets) {
       out.push({ name: t.name || actor?.name || '', img: t.img || actor?.img || '', uuid: actor?.uuid || '', ac: actor?.system?.attributes?.ac?.value ?? null });
     } catch (e) {}
   }
+  return out;
+}
+// Attack→damage correlation for the damage tray's pre-selected multipliers. D&D Beyond sends the attack and damage as
+// SEPARATE rolls, so when an attack lands we record per-target hit/miss (vs each target's AC; nat 20 always hits / nat 1
+// always misses); the FOLLOWING damage roll reads it to pre-set ×0 for any target the attack missed. Consumed on read so
+// a later save-spell on the same token isn't wrongly zeroed; ignored if older than two minutes.
+let _attackHits = new Map(), _attackHitsAt = 0;
+function recordAttackHits(card) {
+  try {
+    const hits = new Map();
+    for (const nt of buildNativeTargets(card.targets)) {
+      if (!nt.uuid) continue;
+      const hit = card.nat === 20 ? true : card.nat === 1 ? false : (nt.ac == null ? true : Number(card.total) >= Number(nt.ac));
+      hits.set(nt.uuid, hit);
+    }
+    if (hits.size) { _attackHits = hits; _attackHitsAt = Date.now(); }
+  } catch (e) {}
+}
+// ×0 multipliers for targets the most recent attack MISSED (resistance/vulnerability is left to dnd5e's own trait math).
+function missedMultipliers(card) {
+  const out = [];
+  try {
+    if (!_attackHits.size || (Date.now() - _attackHitsAt) > 120000) return out;   // no recent attack → don't pre-zero
+    for (const nt of buildNativeTargets(card.targets)) {
+      if (nt.uuid && _attackHits.get(nt.uuid) === false) out.push({ uuid: nt.uuid, multiplier: 0 });
+    }
+    _attackHits = new Map();   // consume so it can't bleed into a later unrelated damage roll
+  } catch (e) {}
   return out;
 }
 
@@ -885,6 +916,24 @@ async function updateStylizedDamage(msgId, applied, multiplier) {
   } catch (e) { console.warn('DDB Integrator | updateStylizedDamage', e); }
 }
 Hooks.on('dnd5e.applyDamage', onDamageApplied);   // fire the damage impact when the GM applies damage (post-multiplier)
+// Seed the native damage tray's per-target multipliers (×0 for targets the attack missed). dnd5e's tray exposes the public
+// getTargetOptions(uuid) → mutating the live options object pre-presses the matching multiplier button + recalculates the
+// row total when the tray lazily builds (on scroll/open) — which always happens AFTER this render hook (verified in 5.3.3).
+// We never set resistance multipliers — dnd5e applies those from the target's traits, so setting them here would double up.
+// Seed ONCE per message so the GM's manual per-row tweaks aren't reset on a later re-render.
+const _seededTrays = new Set();
+Hooks.on('dnd5e.renderChatMessage', (message, html) => {
+  try {
+    const plan = message?.flags?.[NS]?.multipliers;
+    if (!plan?.length || _seededTrays.has(message.id)) return;
+    const root = html instanceof HTMLElement ? html : (html?.[0] || null);
+    let el = root?.querySelector?.('damage-application');
+    if (!el) el = document.querySelector(`[data-message-id="${message.id}"] damage-application`);
+    if (!el?.getTargetOptions) return;   // GM-only element; absent for players or if the tray didn't render
+    for (const { uuid, multiplier } of plan) { try { el.getTargetOptions(uuid).multiplier = multiplier; } catch (e) {} }
+    _seededTrays.add(message.id);
+  } catch (e) {}
+});
 // Damage-type → a full-screen effect wash for the impact cinematic.
 function damageFx(t) { t = String(t || '').toLowerCase();
   if (/slash/.test(t)) return '<div class="ddbx-fx fx-slash"><span></span><span></span><span></span></div>';
@@ -1508,7 +1557,7 @@ Hooks.once('ready', () => {
       else if (m?.t === 'groupclear') clearGroupLocal();
     });
   } catch (e) {}
-  if (!game.user.isGM) { console.log('DDB Integrator | ready (v0.1.10)'); return; }
+  if (!game.user.isGM) { console.log('DDB Integrator | ready (v0.1.11)'); return; }
   window.DDBIntegrator = { reconnect, startOwnSocket, editMapping, editCookie, editSounds, fetchCampaignCharacters, startGroup, finalizeGroup, cancelGroup };
   // Replace/suppress Foundry's native dnd5e roll cards — this module posts its own. ONLY native ROLL cards are
   // touched (no item/usage interception, no automation): a GM roll renders our card too, then we keep the native
@@ -1559,5 +1608,5 @@ Hooks.once('ready', () => {
   // Insurance: force one scene-controls re-render now that everything is wired, in case the controls had already
   // painted. The top-level getSceneControlButtons hook is what makes the tools appear; this just guarantees a paint.
   try { ui.controls?.render?.(true); } catch (e) {}
-  console.log('DDB Integrator | ready (v0.1.10)');
+  console.log('DDB Integrator | ready (v0.1.11)');
 });

@@ -39,7 +39,7 @@ const STYLES = `
 .ddbx2-pc-ctx{font-size:13px;font-weight:bold;letter-spacing:.08em;text-transform:uppercase;color:var(--txt-dim);margin-top:5px;}
 .ddbx2-pc-title{font-size:16px;font-weight:900;letter-spacing:.02em;margin-bottom:6px;color:#fff;}
 .ddbx2-pc-target{display:flex;flex-wrap:wrap;align-items:flex-start;justify-content:center;gap:16px;margin-top:10px;padding-top:12px;border-top:1px solid rgba(255,255,255,.08);}
-.ddbx2-pc-tgt{display:flex;flex-direction:column;align-items:center;gap:13px;max-width:88px;}
+.ddbx2-pc-tgt{display:flex;flex-direction:column;align-items:center;gap:13px;width:92px;}
 .ddbx2-pc-reticule{position:relative;width:46px;height:46px;flex:0 0 auto;}
 .ddbx2-pc-reticule img{width:100%;height:100%;border-radius:50%;object-fit:cover;}
 .ddbx2-pc-reticule::before{content:"";position:absolute;inset:-4px;border-radius:50%;border:2px solid rgba(255,80,80,.9);box-shadow:0 0 9px rgba(255,55,55,.55);}
@@ -124,7 +124,7 @@ const STYLES = `
 .ddbx-strike .ddbx-strikesub{position:absolute;right:-6px;bottom:4px;width:84px;height:84px;border-radius:50%;background-size:cover;background-position:center;background-color:#15101c;box-shadow:0 0 0 3px var(--c1),0 0 0 6px rgba(0,0,0,.6),0 0 22px #000b;animation:ddbx-badgein .55s cubic-bezier(.15,1.4,.4,1) .5s both;}
 @keyframes ddbx-strikein{0%{opacity:0;transform:translate(-180px,-150px) rotate(-46deg) scale(.5);}55%{opacity:1;transform:translate(0,0) rotate(8deg) scale(1.12);}75%{transform:translate(0,0) rotate(-2deg) scale(.97);}100%{opacity:1;transform:translate(0,0) rotate(0) scale(1);}}
 .ddbx-target{position:relative;display:inline-block;border-radius:50%;background-size:cover;background-position:center;background-color:#15151d;box-shadow:0 0 0 4px var(--c1),0 0 0 11px rgba(0,0,0,.6),0 0 70px var(--c2);animation:ddbx-portin .8s cubic-bezier(.15,1.3,.4,1) .15s both;}
-.ddbx-tname{display:block;margin-top:12px;font-size:22px;font-weight:bold;letter-spacing:.16em;text-transform:uppercase;color:#fff;text-shadow:0 2px 10px #000,0 0 16px #000;animation:ddbx-textin .8s ease-out .2s both;}
+.ddbx-tname{display:block;margin-top:12px;font-size:22px;font-weight:bold;letter-spacing:.16em;text-transform:uppercase;color:#fff;text-shadow:0 2px 10px #000,0 0 16px #000;animation:ddbx-textin .8s ease-out .2s both;max-width:100%;box-sizing:border-box;text-align:center;word-break:break-word;}
 .ddbx-impact-att{position:absolute;left:0;right:0;top:9vh;display:flex;justify-content:center;}
 .ddbx-impact-focus{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);display:flex;flex-wrap:wrap;align-items:center;justify-content:center;gap:16px 32px;max-width:88vw;}
 .ddbx-tfoc{display:flex;flex-direction:column;align-items:center;}
@@ -1138,7 +1138,7 @@ async function renderStinger(p) {
       // The overlay shows EVERY targeted token (portrait + name), centred and wrapping; portraits shrink as the count grows.
       const tlist = (Array.isArray(p.targets) && p.targets.length) ? p.targets : ((p.targetImg || p.targetName) ? [{ img: p.targetImg, name: p.targetName }] : []);
       const tn = tlist.length, tsz = tn <= 1 ? 218 : tn === 2 ? 176 : tn === 3 ? 148 : tn <= 6 ? 120 : 96;
-      const focus = tn ? `<div class="ddbx-impact-focus${tn > 1 ? ' multi' : ''}">${tlist.map(t => `<div class="ddbx-tfoc">${t.img ? `<span class="ddbx-target" style="width:${tsz}px;height:${tsz}px;background-image:url('${cleanUrl(t.img)}'),var(--ddbx-portbg)"></span>` : ''}${t.name ? `<span class="ddbx-tname">${esc(t.name)}</span>` : ''}</div>`).join('')}</div>` : '';
+      const focus = tn ? `<div class="ddbx-impact-focus${tn > 1 ? ' multi' : ''}">${tlist.map(t => `<div class="ddbx-tfoc" style="width:${tsz}px">${t.img ? `<span class="ddbx-target" style="width:${tsz}px;height:${tsz}px;background-image:url('${cleanUrl(t.img)}'),var(--ddbx-portbg)"></span>` : ''}${t.name ? `<span class="ddbx-tname">${esc(t.name)}</span>` : ''}</div>`).join('')}</div>` : '';
       const num = (p.total != null) ? `<div class="ddbx-result dmgnum">${esc(p.total)}</div>` : '';
       const labTxt = p.heal ? 'healing' : isHit ? `${esc(p.dtype || '')} damage`.trim() : esc(p.action || 'attack');
       const lab = `<div class="ddbx-rsub">${labTxt}</div>`;
@@ -1508,7 +1508,7 @@ Hooks.once('ready', () => {
       else if (m?.t === 'groupclear') clearGroupLocal();
     });
   } catch (e) {}
-  if (!game.user.isGM) { console.log('DDB Integrator | ready (v0.1.9)'); return; }
+  if (!game.user.isGM) { console.log('DDB Integrator | ready (v0.1.10)'); return; }
   window.DDBIntegrator = { reconnect, startOwnSocket, editMapping, editCookie, editSounds, fetchCampaignCharacters, startGroup, finalizeGroup, cancelGroup };
   // Replace/suppress Foundry's native dnd5e roll cards — this module posts its own. ONLY native ROLL cards are
   // touched (no item/usage interception, no automation): a GM roll renders our card too, then we keep the native
@@ -1559,5 +1559,5 @@ Hooks.once('ready', () => {
   // Insurance: force one scene-controls re-render now that everything is wired, in case the controls had already
   // painted. The top-level getSceneControlButtons hook is what makes the tools appear; this just guarantees a paint.
   try { ui.controls?.render?.(true); } catch (e) {}
-  console.log('DDB Integrator | ready (v0.1.9)');
+  console.log('DDB Integrator | ready (v0.1.10)');
 });

@@ -370,7 +370,7 @@ async function present(p) {
     };
     await postPublic(card);   // the unified chat card ALWAYS posts (keeps the chat log), session live or not
     // D&D Beyond DAMAGE rolls have no native dnd5e card, so synthesize one (with the system's Apply tray) for the GM.
-    if (p.ddb) { try { synthDamageCard(card); } catch (e) {} }
+    if (p.ddb) { try { synthDamageCard(card); synthAttackCard(card); } catch (e) {} }
     // Initiative: the FIRST init roll auto-opens an Initiative gather; the rest fold in; each value is written to the
     // combat tracker. Only when nothing else is running (or an Initiative gather already is) — a manual Group Check /
     // Contest is never hijacked. The GM ends the gather with the ✕ on the cinematic.
@@ -414,34 +414,56 @@ function setInitiative(actor, value) {
     for (const c of combs) { try { game.combat.setInitiative(c.id, Number(value)); } catch (e) {} }
   } catch (e) { console.warn('DDB Integrator | setInitiative', e); }
 }
-// For a D&D Beyond DAMAGE roll (which has no native card), post the SYSTEM's own damage card — a real DamageRoll carrying
-// the rolled total + type plus the dnd5e flags that render the Apply tray (multipliers, resistance, temp HP). Posted
-// publicly like any native card (nothing hidden); only the GM can actually apply. The GM clicks Apply — never automatic.
+// For a D&D Beyond DAMAGE roll (which has no native card), post the SYSTEM's own damage card — with its Apply tray
+// (multipliers, resistance, temp HP). Uses dnd5e's OWN activity-less damage path (the same one its [[/damage]] enricher
+// uses): a constant `parts:["<total>"]` evaluates to the exact DDB total (no re-roll), and the Apply tray renders from
+// the DamageRoll instance + GM — no real item/activity required. Posted publicly; only the GM can apply; never automatic.
 async function synthDamageCard(card) {
   try {
     if (!game.user?.isGM) return;
     if (card.kind !== 'damage' || card.heal) return;
     if (!game.settings.get(NS, 'ddbApplyCard')) return;
-    const DamageRoll = CONFIG.Dice?.DamageRoll; if (!DamageRoll) return;
+    const DamageRoll = CONFIG.Dice?.DamageRoll; if (!DamageRoll?.build) { console.warn('DDB Integrator | no DamageRoll.build'); return; }
     const dtype = card.damageType || (card.damageTypes && card.damageTypes[0]) || '';
     const total = Math.max(0, Math.round(Number(card.total) || 0));
-    // A constant DamageRoll carrying the exact DDB total + type (the stylized card already shows the dice breakdown).
-    const roll = new DamageRoll(String(total), {}, { type: dtype, types: dtype ? [dtype] : [], properties: [], isCritical: false, critical: { multiplyNumeric: false, powerfulCritical: false }, rollType: 'damage' });
-    await roll.evaluate();
-    const dnd5e = { targets: buildNativeTargets(card.targets), messageType: 'roll', roll: { type: 'damage' } };
-    // Link the real item/activity when the roller is a genuine actor (richer card + resistance properties); skip for placeholders.
-    const actor = card.actorId ? game.actors.get(card.actorId) : null;
-    const item = actor?.items?.find?.(i => i.name === card.action) || null;
-    if (item) {
-      dnd5e.item = { type: item.type, id: item.id, uuid: item.uuid };
-      let act = null; try { act = item.system?.activities?.contents?.[0] || (item.system?.activities ? Array.from(item.system.activities)[0] : null); } catch (e) {}
-      if (act?.uuid) dnd5e.activity = { type: act.type, id: act.id, uuid: act.uuid };
-    }
-    await ChatMessage.create({
-      speaker: speakerFor(card), rolls: [roll], flavor: `${card.action || 'Damage'} — Damage Roll`,
-      flags: { dnd5e, [NS]: { synth: true } },
-    });
+    console.log('[ddbx-synth] damage card', { total, dtype });
+    await DamageRoll.build(
+      { rolls: [{ parts: [String(total)], options: { type: dtype, types: dtype ? [dtype] : [], properties: [] } }], hookNames: ['damage'] },
+      { configure: false },
+      { create: true, data: { flavor: `${card.action || 'Damage'} — Damage Roll`, speaker: speakerFor(card), flags: synthFlags(card, 'damage') } }
+    );
   } catch (e) { console.warn('DDB Integrator | synthDamageCard', e); }
+}
+// For a D&D Beyond ATTACK roll, post the native attack card (the d20 total vs each target's AC → hit/miss). A constant
+// D20Roll carries the exact DDB total; the hit/miss comes from options.target (the AC) + the 'attack' roll flag. (The
+// crit/fumble highlight needs the real d20 face, which the stylized card already shows, so we keep this simple.)
+async function synthAttackCard(card) {
+  try {
+    if (!game.user?.isGM) return;
+    if (card.kind !== 'attack') return;
+    if (!game.settings.get(NS, 'ddbApplyCard')) return;
+    const D20Roll = CONFIG.Dice?.D20Roll; if (!D20Roll?.toMessage) { console.warn('DDB Integrator | no D20Roll.toMessage'); return; }
+    const total = Math.round(Number(card.total) || 0);
+    const ac = buildNativeTargets(card.targets).find(t => t.ac != null)?.ac ?? null;
+    console.log('[ddbx-synth] attack card', { total, ac });
+    const roll = new D20Roll(String(total), {}, { target: ac == null ? undefined : ac, criticalSuccess: 20, criticalFailure: 1, rollType: 'attack' });
+    await roll.evaluate();
+    await D20Roll.toMessage([roll], { flavor: `${card.action || 'Attack'} — Attack Roll`, speaker: speakerFor(card), flags: synthFlags(card, 'attack') }, { create: true });
+  } catch (e) { console.warn('DDB Integrator | synthAttackCard', e); }
+}
+// Shared dnd5e flags for a synthesized native card: roll type + targets (name/img/actor-uuid/AC), plus the real
+// item/activity when the roller is a genuine actor (richer header + resistance properties); skipped for placeholders.
+// The [NS].synth flag makes our own preCreateChatMessage interceptor skip it (so it isn't re-stylized / duplicated).
+function synthFlags(card, type) {
+  const dnd5e = { targets: buildNativeTargets(card.targets), messageType: 'roll', roll: { type } };
+  const actor = card.actorId ? game.actors.get(card.actorId) : null;
+  const item = actor?.items?.find?.(i => i.name === card.action) || null;
+  if (item) {
+    dnd5e.item = { type: item.type, id: item.id, uuid: item.uuid };
+    let act = null; try { act = item.system?.activities?.contents?.[0] || (item.system?.activities ? Array.from(item.system.activities)[0] : null); } catch (e) {}
+    if (act?.uuid) dnd5e.activity = { type: act.type, id: act.id, uuid: act.uuid };
+  }
+  return { dnd5e, [NS]: { synth: true } };
 }
 // Build the dnd5e.targets flag (name, img, actor uuid, AC) from the captured target tokens — for the Apply tray's TARGETED tab.
 function buildNativeTargets(targets) {
@@ -1322,7 +1344,7 @@ Hooks.once('init', () => {
   game.settings.register(NS, 'userId', { name: 'D&D Beyond username (or user ID)', hint: 'Your D&D Beyond username works here — you do NOT need the numeric user ID. (The numeric ID from DevTools also works if you prefer.)', scope: 'world', config: true, type: String, default: '' });
   game.settings.register(NS, 'characterMapping', { scope: 'world', config: false, type: Object, default: {} });
   // ─── Cards ───
-  game.settings.register(NS, 'ddbApplyCard', { name: 'Apply card for D&D Beyond damage', hint: 'D&D Beyond DAMAGE rolls have no native card of their own. When on, also post the system’s native damage card — with its Apply tray (½/×2 multipliers, resistance, temp HP) — so you can apply D&D Beyond damage just like a local roll. Your stylized card still posts too. Applying is always a GM click; nothing is automatic.', scope: 'world', config: true, type: Boolean, default: true });
+  game.settings.register(NS, 'ddbApplyCard', { name: 'Native cards for D&D Beyond rolls', hint: 'D&D Beyond rolls have no native card of their own. When on, also post the system’s native cards for them — the damage card with its Apply tray (½/×2 multipliers, resistance, temp HP) and the attack card with hit/miss vs the target’s AC — so D&D Beyond rolls behave just like local Foundry rolls. Your stylized card + cinematic still post too. Applying is always a GM click; nothing is automatic.', scope: 'world', config: true, type: Boolean, default: true });
   // ─── Cinematics ───
   game.settings.register(NS, 'cinematics', { name: 'Cinematic roll reveals', hint: 'Show a brief full-screen flourish when a roll lands — the roller portrait, the total, and the kind, with gold flair for a natural 20 and red for a natural 1. Shown to all players.', scope: 'world', config: true, type: Boolean, default: true });
   game.settings.register(NS, 'cinematicDuration', { name: 'Cinematic duration (seconds)', hint: 'How long a single-roll cinematic stays on screen before it fades (also sets the spacing between back-to-back reveals and the group result reveal). Group Check / Contest / Initiative gathering stay up until you finalize them.', scope: 'world', config: true, type: Number, range: { min: 1.5, max: 10, step: 0.5 }, default: 3.5 });
@@ -1368,7 +1390,7 @@ Hooks.once('ready', () => {
       else if (m?.t === 'groupclear') clearGroupLocal();
     });
   } catch (e) {}
-  if (!game.user.isGM) { console.log('DDB Integrator | ready (v0.1.4)'); return; }
+  if (!game.user.isGM) { console.log('DDB Integrator | ready (v0.1.5)'); return; }
   window.DDBIntegrator = { reconnect, startOwnSocket, editMapping, editCookie, editSounds, fetchCampaignCharacters, startGroup, finalizeGroup, cancelGroup };
   // Replace/suppress Foundry's native dnd5e roll cards — this module posts its own. ONLY native ROLL cards are
   // touched (no item/usage interception, no automation): a GM roll renders our card too, then we keep the native
@@ -1416,5 +1438,5 @@ Hooks.once('ready', () => {
   // Insurance: force one scene-controls re-render now that everything is wired, in case the controls had already
   // painted. The top-level getSceneControlButtons hook is what makes the tools appear; this just guarantees a paint.
   try { ui.controls?.render?.(true); } catch (e) {}
-  console.log('DDB Integrator | ready (v0.1.4)');
+  console.log('DDB Integrator | ready (v0.1.5)');
 });

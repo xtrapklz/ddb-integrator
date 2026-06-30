@@ -42,9 +42,23 @@ const STYLES = `
 .ddbx2-pc-tgt{display:flex;flex-direction:column;align-items:center;gap:13px;width:92px;}
 .ddbx2-pc-reticule{position:relative;width:46px;height:46px;flex:0 0 auto;}
 .ddbx2-pc-reticule img{width:100%;height:100%;border-radius:50%;object-fit:cover;}
-.ddbx2-pc-reticule::before{content:"";position:absolute;inset:-4px;border-radius:50%;border:2px solid rgba(255,80,80,.9);box-shadow:0 0 9px rgba(255,55,55,.55);}
-.ddbx2-pc-reticule::after{content:"";position:absolute;inset:-9px;background:linear-gradient(rgba(255,80,80,.95),rgba(255,80,80,.95)) 50% 0/2px 7px no-repeat,linear-gradient(rgba(255,80,80,.95),rgba(255,80,80,.95)) 50% 100%/2px 7px no-repeat,linear-gradient(rgba(255,80,80,.95),rgba(255,80,80,.95)) 0 50%/7px 2px no-repeat,linear-gradient(rgba(255,80,80,.95),rgba(255,80,80,.95)) 100% 50%/7px 2px no-repeat;}
+.ddbx2-pc-reticule::before{content:"";position:absolute;inset:-4px;border-radius:50%;border:2px solid var(--ret,rgba(255,80,80,.9));box-shadow:0 0 9px var(--retglow,rgba(255,55,55,.55));}
+.ddbx2-pc-reticule::after{content:"";position:absolute;inset:-9px;background:linear-gradient(var(--ret,rgba(255,80,80,.95)),var(--ret,rgba(255,80,80,.95))) 50% 0/2px 7px no-repeat,linear-gradient(var(--ret,rgba(255,80,80,.95)),var(--ret,rgba(255,80,80,.95))) 50% 100%/2px 7px no-repeat,linear-gradient(var(--ret,rgba(255,80,80,.95)),var(--ret,rgba(255,80,80,.95))) 0 50%/7px 2px no-repeat,linear-gradient(var(--ret,rgba(255,80,80,.95)),var(--ret,rgba(255,80,80,.95))) 100% 50%/7px 2px no-repeat;}
+.ddbx2-pc-tgt.miss{--ret:rgba(172,178,190,.82);--retglow:transparent;}
+.ddbx2-pc-tgt.miss .ddbx2-pc-reticule img{filter:grayscale(.85) brightness(.82);}
+.ddbx2-pc-tgt.miss .ddbx2-pc-tname{color:#9aa0ac;}
 .ddbx2-pc-tname{font-size:11px;font-weight:bold;color:#ffb3b3;letter-spacing:.02em;text-align:center;line-height:1.15;word-break:break-word;}
+.ddbx2-ac-nums{display:flex;justify-content:center;margin-top:2px;}
+.ddbx2-ac-nums.two{justify-content:space-around;}
+.ddbx2-ac-cell{text-align:center;}
+.ddbx2-ac-lbl{font-size:12px;letter-spacing:.09em;text-transform:uppercase;color:var(--txt-dim,#8b90a0);display:flex;align-items:center;justify-content:center;gap:5px;margin-bottom:3px;}
+.ddbx2-ac-val{font-size:40px;font-weight:900;line-height:1;}
+.ddbx2-ac-val.hit{color:#5b9cd6;}
+.ddbx2-ac-val.dmg{color:var(--coral-text,#e0a878);}
+.ddbx2-ac-chips{display:flex;flex-wrap:wrap;justify-content:center;gap:8px;margin-top:9px;}
+.ddbx2-ac-chip{font-size:12px;font-weight:bold;padding:4px 11px;border-radius:20px;background:rgba(224,130,77,.2);color:var(--coral-text,#e0a878);box-shadow:inset 0 0 0 1px rgba(224,130,77,.45);text-transform:capitalize;}
+.ddbx2-ac-chip b{color:#fff;}
+.ddbx2-ac-applied{font-size:11px;font-weight:bold;color:#ffce6a;margin-top:7px;text-align:center;text-transform:uppercase;letter-spacing:.05em;}
 @keyframes ddbx2-pop{0%{transform:scale(.55);opacity:0;}55%{transform:scale(1.18);opacity:1;}100%{transform:scale(1);}}
 @keyframes ddbx2-glow{0%{filter:drop-shadow(0 0 0 currentColor);}30%{filter:drop-shadow(0 0 6px currentColor);}100%{filter:drop-shadow(0 0 0 transparent);}}
 .ddbx2-pc-kind{font-size:12px;font-weight:bold;letter-spacing:.1em;text-transform:uppercase;color:var(--txt-dim);display:inline-flex;align-items:center;gap:5px;}
@@ -318,6 +332,7 @@ function kindMeta(c) {
   }
 }
 function publicCard(c) {
+  if (c.toHit || c.damage) return actionCard(c);   // unified attack+damage card (expands as rolls arrive)
   const m = kindMeta(c);
   const nat = c.nat ?? null;
   const heroCls = nat === 20 ? ' crit' : nat === 1 ? ' fumble' : '';
@@ -355,10 +370,82 @@ function publicCard(c) {
   const sub = c.formula ? `<div class="ddbx2-pc-sub">${esc(c.formula)}</div>` : '';
   return `<div class="ddbx2-pc" style="--accent:${accent}">${wm}<div class="ddbx2-pc-body">${title}${kindRow}${hero}${pillRow}${sub}${target}</div></div>`;
 }
+// The unified player-facing ACTION card: ⌖ To Hit and/or 💧 Damage in ONE card that grows as rolls arrive. The roll FORMULA
+// is never shown (it would leak a monster's/PC's modifiers to the table). Damage types ride below as chips (with per-type
+// values when there's more than one). Missed targets are greyed.
+function actionCard(c) {
+  const wm = c.img
+    ? `<div class="ddbx2-pc-wm" style="background:url('${cleanUrl(c.img)}') center/cover no-repeat;"></div>`
+    : `<div class="ddbx2-pc-wm" style="background-color:hsl(22 60% 55%);-webkit-mask:url('${WM_IMG}') center/62% no-repeat;mask:url('${WM_IMG}') center/62% no-repeat;"></div>`;
+  const title = `<div class="ddbx2-pc-title">${esc(c.action || 'Action')}</div>`;
+  const cells = [];
+  if (c.toHit) cells.push(`<div class="ddbx2-ac-cell"><div class="ddbx2-ac-lbl"><i class="fas fa-crosshairs"></i> To Hit</div><div class="ddbx2-ac-val hit">${esc(c.toHit.value)}</div></div>`);
+  if (c.damage) cells.push(`<div class="ddbx2-ac-cell"><div class="ddbx2-ac-lbl"><i class="fas fa-tint"></i> Damage</div><div class="ddbx2-ac-val dmg">${esc(c.damage.total)}</div></div>`);
+  const nums = cells.length ? `<div class="ddbx2-ac-nums${cells.length > 1 ? ' two' : ''}">${cells.join('')}</div>` : '';
+  let chips = '';
+  if (c.damage && Array.isArray(c.damage.types) && c.damage.types.length) {
+    const single = c.damage.types.length === 1;
+    chips = `<div class="ddbx2-ac-chips">${c.damage.types.map(t => `<span class="ddbx2-ac-chip">${single ? '' : `<b>${esc(t.value)}</b> `}${esc(t.type)}</span>`).join('')}</div>`;
+  }
+  const applied = c.appliedMult ? `<div class="ddbx2-ac-applied">×${esc(c.appliedMult)} applied</div>` : '';
+  const tgts = Array.isArray(c.targets) ? c.targets : [];
+  const target = tgts.length
+    ? `<div class="ddbx2-pc-target">${tgts.map(t => `<div class="ddbx2-pc-tgt${t.hit === false ? ' miss' : ''}">${t.img ? `<span class="ddbx2-pc-reticule"><img src="${cleanUrl(t.img)}" onerror="this.style.display='none'"></span>` : ''}${t.name ? `<span class="ddbx2-pc-tname">${esc(t.name)}</span>` : ''}</div>`).join('')}</div>`
+    : '';
+  return `<div class="ddbx2-pc" style="--accent:rgba(196,93,49,.30)">${wm}<div class="ddbx2-pc-body">${title}${nums}${chips}${applied}${target}</div></div>`;
+}
 async function postPublic(c) {
   const flags = { [NS]: { card: true } };
   if (c.kind === 'damage') flags[NS].cardData = c;   // kept so we can update the displayed total when the GM applies the damage
   return ChatMessage.create({ speaker: speakerFor(c), content: publicCard(c), flags });
+}
+// --- Unified action card: ONE expanding card per action (attack + its damage), instead of separate cards. ---
+let _actionCards = new Map();   // key "actorId::action" -> { msgId, data, at, dmgCount, timer }
+function unifiedKey(card) { return (card.actorId || card.who || '?') + '::' + (card.action || '?'); }
+function hitForUuid(uuid) {
+  try { if (!uuid || !_attackHits.size || (Date.now() - _attackHitsAt) > 120000) return null; const h = _attackHits.get(uuid); return h === undefined ? null : h; } catch (e) { return null; }
+}
+function cardTargets(card) {
+  try { return buildNativeTargets(card.targets).map(nt => ({ img: nt.img, name: nt.name, hit: hitForUuid(nt.uuid) })); } catch (e) { return []; }
+}
+// Fold one damage roll into a card's damage. DDB sends one roll PER type (in the action's part order), so the type comes
+// from damageTypes[idx]; same-type rolls merge into one chip; the total accumulates.
+function addDmgToCard(data, card, idx) {
+  data.damage = data.damage || { total: 0, types: [] };
+  const all = card.damageTypes || [];
+  const type = all[idx] || card.damageType || all[0] || '';
+  const val = Math.max(0, Math.round(Number(card.total) || 0));
+  const ex = type ? data.damage.types.find(t => t.type === type) : null;
+  if (ex) ex.value += val; else data.damage.types.push({ type, value: val });
+  data.damage.total += val;
+}
+function scheduleCardUpdate(rec) {
+  clearTimeout(rec.timer);   // coalesce the per-type damage rolls (they arrive in a burst) into one re-render
+  rec.timer = setTimeout(async () => {
+    try { const msg = game.messages?.get?.(rec.msgId); if (msg) await msg.update({ content: publicCard(rec.data), flags: { [NS]: { card: true, cardData: rec.data } } }); } catch (e) {}
+  }, 120);
+}
+// Post (or expand) the stylized card. Attack → a fresh card with To Hit; its damage rolls EXPAND that same card; a damage
+// roll with no recent attack starts its own card. Non-action rolls (check/save/init/death/heal) keep the classic card.
+async function presentStylized(card) {
+  const isAttack = card.kind === 'attack';
+  const isDmg = card.kind === 'damage' && !card.heal;
+  if (!isAttack && !isDmg) return postPublic(card);
+  const key = unifiedKey(card), now = Date.now();
+  if (isDmg) {
+    const rec = _actionCards.get(key);
+    if (rec && (now - rec.at) < 120000 && game.messages?.get?.(rec.msgId)) {
+      addDmgToCard(rec.data, card, rec.dmgCount++); rec.at = now; scheduleCardUpdate(rec);
+      return game.messages.get(rec.msgId);
+    }
+  }
+  const data = { who: card.who, action: card.action, actorId: card.actorId, actorImg: card.actorImg, img: card.img, kind: card.kind, targets: cardTargets(card), toHit: null, damage: null };
+  let dmgCount = 0;
+  if (isAttack) data.toHit = { value: Math.max(0, Math.round(Number(card.total) || 0)) };
+  else { addDmgToCard(data, card, 0); dmgCount = 1; }
+  const msg = await ChatMessage.create({ speaker: speakerFor(card), content: publicCard(data), flags: { [NS]: { card: true, cardData: data } } });
+  _actionCards.set(key, { msgId: msg.id, data, at: now, dmgCount, timer: null });
+  return msg;
 }
 
 // Present ONE roll: post the public card, animate the DDB dice, fire the cinematic + sound.
@@ -374,8 +461,8 @@ async function present(p) {
       img: p.img || '', actorImg: actor?.img || '', formula: p.formula || '',
       target: targets[0] || null, targets,   // PRESENTATION ONLY — first frames the impact cinematic; the card lists all.
     };
-    if (p.ddb && card.kind === 'attack') { try { recordAttackHits(card); } catch (e) {} }   // remember hit/miss for the damage tray
-    const styled = await postPublic(card);   // the unified chat card ALWAYS posts (keeps the chat log), session live or not
+    if (card.kind === 'attack') { try { recordAttackHits(card); } catch (e) {} }   // remember hit/miss for the tray + card colouring
+    const styled = await presentStylized(card);   // ONE expanding card per action (attack rolls open it, damage rolls grow it)
     // D&D Beyond DAMAGE rolls have no native dnd5e card, so synthesize one (with the system's Apply tray) for the GM.
     // The stylized card's id rides on the damage card so the apply hook can update its displayed total to the applied amount.
     if (p.ddb) { try { synthDamageCard(card, styled?.id); synthAttackCard(card); } catch (e) {} }
@@ -529,7 +616,8 @@ function missedMultipliers(card) {
     for (const nt of buildNativeTargets(card.targets)) {
       if (nt.uuid && _attackHits.get(nt.uuid) === false) out.push({ uuid: nt.uuid, multiplier: 0 });
     }
-    _attackHits = new Map();   // consume so it can't bleed into a later unrelated damage roll
+    // NOT consumed: a multi-type hit makes several native trays (one per type), and each needs the same ×0 set. Staleness
+    // is bounded by the 120s window + the next attack overwriting _attackHits.
   } catch (e) {}
   return out;
 }
@@ -1562,7 +1650,7 @@ Hooks.once('ready', () => {
       else if (m?.t === 'groupclear') clearGroupLocal();
     });
   } catch (e) {}
-  if (!game.user.isGM) { console.log('DDB Integrator | ready (v0.1.12)'); return; }
+  if (!game.user.isGM) { console.log('DDB Integrator | ready (v0.2.0)'); return; }
   window.DDBIntegrator = { reconnect, startOwnSocket, editMapping, editCookie, editSounds, fetchCampaignCharacters, startGroup, finalizeGroup, cancelGroup };
   // Replace/suppress Foundry's native dnd5e roll cards — this module posts its own. ONLY native ROLL cards are
   // touched (no item/usage interception, no automation): a GM roll renders our card too, then we keep the native
@@ -1613,5 +1701,5 @@ Hooks.once('ready', () => {
   // Insurance: force one scene-controls re-render now that everything is wired, in case the controls had already
   // painted. The top-level getSceneControlButtons hook is what makes the tools appear; this just guarantees a paint.
   try { ui.controls?.render?.(true); } catch (e) {}
-  console.log('DDB Integrator | ready (v0.1.12)');
+  console.log('DDB Integrator | ready (v0.2.0)');
 });

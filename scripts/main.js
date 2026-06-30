@@ -38,13 +38,13 @@ const STYLES = `
 .ddbx2-pc-name{font-size:17px;font-weight:bold;letter-spacing:.06em;color:#fff;margin-bottom:2px;}
 .ddbx2-pc-ctx{font-size:13px;font-weight:bold;letter-spacing:.08em;text-transform:uppercase;color:var(--txt-dim);margin-top:5px;}
 .ddbx2-pc-title{font-size:16px;font-weight:900;letter-spacing:.02em;margin-bottom:6px;color:#fff;}
-.ddbx2-pc-target{display:flex;align-items:center;justify-content:center;gap:7px;margin-top:8px;padding-top:7px;border-top:1px solid rgba(255,255,255,.08);}
-.ddbx2-pc-tcross{color:#ff8080;font-size:10px;}
-.ddbx2-pc-reticule{position:relative;width:30px;height:30px;flex:0 0 auto;}
+.ddbx2-pc-target{display:flex;flex-wrap:wrap;align-items:flex-start;justify-content:center;gap:16px;margin-top:10px;padding-top:12px;border-top:1px solid rgba(255,255,255,.08);}
+.ddbx2-pc-tgt{display:flex;flex-direction:column;align-items:center;gap:13px;max-width:88px;}
+.ddbx2-pc-reticule{position:relative;width:46px;height:46px;flex:0 0 auto;}
 .ddbx2-pc-reticule img{width:100%;height:100%;border-radius:50%;object-fit:cover;}
-.ddbx2-pc-reticule::before{content:"";position:absolute;inset:-3px;border-radius:50%;border:1.5px solid rgba(255,80,80,.9);box-shadow:0 0 7px rgba(255,55,55,.55);}
-.ddbx2-pc-reticule::after{content:"";position:absolute;inset:-7px;background:linear-gradient(rgba(255,80,80,.95),rgba(255,80,80,.95)) 50% 0/1.5px 5px no-repeat,linear-gradient(rgba(255,80,80,.95),rgba(255,80,80,.95)) 50% 100%/1.5px 5px no-repeat,linear-gradient(rgba(255,80,80,.95),rgba(255,80,80,.95)) 0 50%/5px 1.5px no-repeat,linear-gradient(rgba(255,80,80,.95),rgba(255,80,80,.95)) 100% 50%/5px 1.5px no-repeat;}
-.ddbx2-pc-tname{font-size:11px;font-weight:bold;color:#ffb3b3;letter-spacing:.02em;}
+.ddbx2-pc-reticule::before{content:"";position:absolute;inset:-4px;border-radius:50%;border:2px solid rgba(255,80,80,.9);box-shadow:0 0 9px rgba(255,55,55,.55);}
+.ddbx2-pc-reticule::after{content:"";position:absolute;inset:-9px;background:linear-gradient(rgba(255,80,80,.95),rgba(255,80,80,.95)) 50% 0/2px 7px no-repeat,linear-gradient(rgba(255,80,80,.95),rgba(255,80,80,.95)) 50% 100%/2px 7px no-repeat,linear-gradient(rgba(255,80,80,.95),rgba(255,80,80,.95)) 0 50%/7px 2px no-repeat,linear-gradient(rgba(255,80,80,.95),rgba(255,80,80,.95)) 100% 50%/7px 2px no-repeat;}
+.ddbx2-pc-tname{font-size:11px;font-weight:bold;color:#ffb3b3;letter-spacing:.02em;text-align:center;line-height:1.15;word-break:break-word;}
 @keyframes ddbx2-pop{0%{transform:scale(.55);opacity:0;}55%{transform:scale(1.18);opacity:1;}100%{transform:scale(1);}}
 @keyframes ddbx2-glow{0%{filter:drop-shadow(0 0 0 currentColor);}30%{filter:drop-shadow(0 0 6px currentColor);}100%{filter:drop-shadow(0 0 0 transparent);}}
 .ddbx2-pc-kind{font-size:12px;font-weight:bold;letter-spacing:.1em;text-transform:uppercase;color:var(--txt-dim);display:inline-flex;align-items:center;gap:5px;}
@@ -125,7 +125,9 @@ const STYLES = `
 .ddbx-target{position:relative;display:inline-block;border-radius:50%;background-size:cover;background-position:center;background-color:#15151d;box-shadow:0 0 0 4px var(--c1),0 0 0 11px rgba(0,0,0,.6),0 0 70px var(--c2);animation:ddbx-portin .8s cubic-bezier(.15,1.3,.4,1) .15s both;}
 .ddbx-tname{display:block;margin-top:12px;font-size:22px;font-weight:bold;letter-spacing:.16em;text-transform:uppercase;color:#fff;text-shadow:0 2px 10px #000,0 0 16px #000;animation:ddbx-textin .8s ease-out .2s both;}
 .ddbx-impact-att{position:absolute;left:0;right:0;top:9vh;display:flex;justify-content:center;}
-.ddbx-impact-focus{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);text-align:center;}
+.ddbx-impact-focus{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);display:flex;flex-wrap:wrap;align-items:center;justify-content:center;gap:16px 32px;max-width:88vw;}
+.ddbx-tfoc{display:flex;flex-direction:column;align-items:center;}
+.ddbx-impact-focus.multi .ddbx-tname{font-size:15px;margin-top:8px;letter-spacing:.08em;}
 .lay-orbit .ddbx-impact-focus .ddbx-target{width:218px;height:218px;}
 .ddbx-impact-readout{position:absolute;left:0;right:0;bottom:13vh;display:flex;flex-direction:column;align-items:center;gap:6px;}
 .lay-orbit .ddbx-impact-readout .ddbx-result{font-size:120px;}
@@ -214,14 +216,16 @@ function sanitizeStinger(p) {
   // Only 'impact' (damage roll WITH a target) and 'result' (everything else) phases exist — both presentation-only.
   const phase = p.phase === 'impact' ? 'impact' : 'result';
   // applyIds is read-only here: it only feeds canvas.animatePan (a camera move). No data is mutated.
-  const applyIds = Array.isArray(p.applyIds) ? p.applyIds.slice(0, 1).map(s => str(s, 64)).filter(Boolean) : [];
+  const applyIds = Array.isArray(p.applyIds) ? p.applyIds.slice(0, 24).map(s => str(s, 64)).filter(Boolean) : [];   // read-only camera (pan/zoom-to-fit); allow the full target set
   return {
     phase,
     word: str(p.word), action: str(p.action), who: str(p.who), tone: str(p.tone, 16), color: str(p.color, 32),
     img: cleanUrl(p.img), actorImg: cleanUrl(p.actorImg),
     total: num(p.total), hue: num(p.hue), crest: !!p.crest, cue: str(p.cue, 64),
-    dtype: str(p.dtype, 24), heal: !!p.heal,
-    targetName: str(p.targetName), targetImg: cleanUrl(p.targetImg), applyIds,
+    dtype: str(p.dtype, 24), heal: !!p.heal, kind: str(p.kind, 16), nat: num(p.nat),
+    targetName: str(p.targetName), targetImg: cleanUrl(p.targetImg),
+    targets: Array.isArray(p.targets) ? p.targets.slice(0, 24).map(t => ({ name: str(t?.name, 80), img: cleanUrl(t?.img) })).filter(t => t.img || t.name) : [],
+    applyIds,
   };
 }
 // Harden a GROUP cinematic payload received over the socket before it reaches innerHTML (mirrors sanitizeStinger).
@@ -328,9 +332,9 @@ function publicCard(c) {
     : `<div class="ddbx2-pc-wm" style="background-color:${tint};-webkit-mask:url('${WM_IMG}') center/62% no-repeat;mask:url('${WM_IMG}') center/62% no-repeat;"></div>`;
   // Target reticule: Foundry's own message header already shows the ROLLER's portrait + name, so we don't repeat it.
   // Instead, when a target was selected as the roll landed, show WHO is being hit, framed in a crosshair reticule.
-  const tgt = c.target || {};
-  const target = (tgt.img || tgt.name)
-    ? `<div class="ddbx2-pc-target"><i class="fas fa-crosshairs ddbx2-pc-tcross"></i>${tgt.img ? `<span class="ddbx2-pc-reticule"><img src="${cleanUrl(tgt.img)}" onerror="this.style.display='none'"></span>` : ''}${tgt.name ? `<span class="ddbx2-pc-tname">${esc(tgt.name)}</span>` : ''}</div>`
+  const tgts = (Array.isArray(c.targets) && c.targets.length) ? c.targets : (c.target ? [c.target] : []);
+  const target = tgts.length
+    ? `<div class="ddbx2-pc-target">${tgts.map(t => `<div class="ddbx2-pc-tgt">${t.img ? `<span class="ddbx2-pc-reticule"><img src="${cleanUrl(t.img)}" onerror="this.style.display='none'"></span>` : ''}${t.name ? `<span class="ddbx2-pc-tname">${esc(t.name)}</span>` : ''}</div>`).join('')}</div>`
     : '';
   // Title: the action/item name (initiative/death saves carry no item, so use the kind label there).
   const titleTxt = (c.kind === 'init' || c.kind === 'death') ? m.label : (c.action || m.label);
@@ -355,13 +359,14 @@ async function postPublic(c) { return ChatMessage.create({ speaker: speakerFor(c
 async function present(p) {
   try {
     const actor = p.actorId ? game.actors.get(p.actorId) : (p.who ? actorByName(p.who) : null);
+    const targets = captureTargets();   // ALL currently-targeted tokens (presentation only)
     const card = {
       who: p.who, action: p.action, actorId: actor?.id || null,
       kind: p.kind, heal: !!p.heal, ability: p.ability || null,
       total: Number(p.total) || 0, nat: p.nat ?? null, advKind: p.advKind || '',
       damageType: p.damageType || '', damageTypes: p.damageTypes || [],
       img: p.img || '', actorImg: actor?.img || '', formula: p.formula || '',
-      target: captureTarget(),   // PRESENTATION ONLY — the GM's selected token, used solely to frame the impact reveal.
+      target: targets[0] || null, targets,   // PRESENTATION ONLY — first frames the impact cinematic; the card lists all.
     };
     await postPublic(card);   // the unified chat card ALWAYS posts (keeps the chat log), session live or not
     // Initiative: the FIRST init roll auto-opens an Initiative gather; the rest fold in; each value is written to the
@@ -389,13 +394,14 @@ async function present(p) {
     announce(card);
   } catch (e) { console.warn('DDB Integrator | present', e); }
 }
-// Read the GM's currently-targeted token for a cinematic focus only — never stored, never resolved for hit/miss/HP.
-function captureTarget() {
+// Read the GM's currently-targeted tokens (ALL of them) for the card/cinematic — never stored, never resolved for HP.
+// Uses the actor PORTRAIT (actor.img), falling back to the token image.
+function captureTargets() {
   try {
-    const t = game.user?.targets?.first?.() || Array.from(game.user?.targets || [])[0];
-    if (!t) return null;
-    return { id: t.id || null, name: t.name || t.actor?.name || '', img: t.document?.texture?.src || t.actor?.img || '' };
-  } catch (e) { return null; }
+    return Array.from(game.user?.targets || [])
+      .map(t => ({ id: t.id || null, name: t.actor?.name || t.name || '', img: t.actor?.img || t.document?.texture?.src || '' }))
+      .filter(t => t.img || t.name);
+  } catch (e) { return []; }
 }
 // Write a rolled initiative value onto the actor's combatant(s) in the active combat. GM only; no-op without a combat
 // or a matching combatant. This is the ONLY place the module writes Foundry state — and only the initiative field.
@@ -835,7 +841,7 @@ function panToImpactByActors(ids) {
     if (!_preImpactView) _preImpactView = { x: canvas.stage.pivot.x, y: canvas.stage.pivot.y, scale: canvas.stage.scale.x };
     canvas.animatePan({ x: cx, y: cy, scale, duration: 480 });
     clearTimeout(_restoreTimer);
-    _restoreTimer = setTimeout(() => { try { if (_preImpactView) { canvas.animatePan({ ..._preImpactView, duration: 620 }); _preImpactView = null; } } catch (e) {} }, 2900);
+    _restoreTimer = setTimeout(() => { try { if (_preImpactView) { canvas.animatePan({ ..._preImpactView, duration: 620 }); _preImpactView = null; } } catch (e) {} }, Math.max(1400, cineMs()));
   } catch (e) {}
 }
 // Briefly shake Foundry's game board for an impact (a CSS transform burst — no data change).
@@ -927,7 +933,7 @@ async function renderStinger(p) {
     const dur = cineMs() + (impact ? 200 : 0);
     // Colour: an impact themes off its damage type (gold-ish heal); else gold for a crit, red for a crit-fail, then art hue.
     let H;
-    if (impact) H = p.heal ? 140 : (damageHue(p.dtype) ?? 0);
+    if (impact) H = p.heal ? 140 : p.kind === 'damage' ? (damageHue(p.dtype) ?? 0) : (p.hue != null ? p.hue : (p.nat === 20 ? 45 : p.nat === 1 ? 0 : 210));
     else { H = (TONE_HUE[p.tone] != null) ? TONE_HUE[p.tone] : hexToHue(p.color); if (H == null) H = (p.hue != null) ? p.hue : (await imgHue(p.img)); }
     if (H == null) H = 210;
     const colorBg = !impact && !!p.color && TONE_HUE[p.tone] == null;
@@ -945,16 +951,21 @@ async function renderStinger(p) {
       // Impact reveal: the target token is the focus (centre, zoom-in), the attacker rides a SMALLER circle at the top
       // with the weapon/action art as its own sub-circle, the damage total is the big number, type label beneath.
       wrap.classList.add('impactwrap');
+      // A hit (damage/heal) gets the aggressive FX — impact flash, damage wash, screen shake; an attack/to-hit roll
+      // shows the SAME target-centred framing but calmer (no shake/wash), labelled by the action name.
+      const isHit = p.kind === 'damage' || p.heal;
       const dmgType = p.heal ? 'healing' : p.dtype;
       const attArt = p.img ? `<span class="ddbx-strikesub" style="background-image:url('${cleanUrl(p.img)}')"></span>` : '';
       const att = p.actorImg ? `<div class="ddbx-strike" style="background-image:url('${cleanUrl(p.actorImg)}')">${attArt}</div>` : (p.img ? `<div class="ddbx-strike" style="background-image:url('${cleanUrl(p.img)}')"></div>` : '');
-      const tgt = p.targetImg ? `<span class="ddbx-target" style="background-image:url('${cleanUrl(p.targetImg)}'),var(--ddbx-portbg)"></span>` : '';
-      const focus = (tgt || p.targetName) ? `<div class="ddbx-impact-focus">${tgt}${p.targetName ? `<span class="ddbx-tname">${esc(p.targetName)}</span>` : ''}</div>` : '';
+      // The overlay shows EVERY targeted token (portrait + name), centred and wrapping; portraits shrink as the count grows.
+      const tlist = (Array.isArray(p.targets) && p.targets.length) ? p.targets : ((p.targetImg || p.targetName) ? [{ img: p.targetImg, name: p.targetName }] : []);
+      const tn = tlist.length, tsz = tn <= 1 ? 218 : tn === 2 ? 176 : tn === 3 ? 148 : tn <= 6 ? 120 : 96;
+      const focus = tn ? `<div class="ddbx-impact-focus${tn > 1 ? ' multi' : ''}">${tlist.map(t => `<div class="ddbx-tfoc">${t.img ? `<span class="ddbx-target" style="width:${tsz}px;height:${tsz}px;background-image:url('${cleanUrl(t.img)}'),var(--ddbx-portbg)"></span>` : ''}${t.name ? `<span class="ddbx-tname">${esc(t.name)}</span>` : ''}</div>`).join('')}</div>` : '';
       const num = (p.total != null) ? `<div class="ddbx-result dmgnum">${esc(p.total)}</div>` : '';
-      const labTxt = p.heal ? 'healing' : `${esc(p.dtype || '')} damage`.trim();
+      const labTxt = p.heal ? 'healing' : isHit ? `${esc(p.dtype || '')} damage`.trim() : esc(p.action || 'attack');
       const lab = `<div class="ddbx-rsub">${labTxt}</div>`;
-      wrap.innerHTML = `<div class="ddbx-vig hit"></div>${tex}<div class="ddbx-flash"></div>${damageFx(dmgType)}<div class="ddbx-impact-att">${att}</div>${focus}<div class="ddbx-impact-readout">${num}${lab}</div>`;
-      try { shakeScreen(p.heal ? 'soft' : ((p.total ?? 0) >= 25 ? 'hard' : 'med')); } catch (e) {}
+      wrap.innerHTML = `<div class="ddbx-vig${isHit ? ' hit' : ''}"></div>${tex}${isHit ? `<div class="ddbx-flash"></div>${damageFx(dmgType)}` : frame}<div class="ddbx-impact-att">${att}</div>${focus}<div class="ddbx-impact-readout">${num}${lab}</div>`;
+      if (isHit) { try { shakeScreen(p.heal ? 'soft' : ((p.total ?? 0) >= 25 ? 'hard' : 'med')); } catch (e) {} }
       try { panToImpactByActors(p.applyIds); } catch (e) {}
     } else {
       // Action-art sub-circle riding the roller portrait (only for real action art, never the check d20/crest placeholder).
@@ -992,17 +1003,19 @@ function announce(card) {
     const isGen = card.kind === 'check' || card.kind === 'save' || card.kind === 'init' || card.kind === 'death';
     const hue = abilityHue(card.ability);
     const m = kindMeta(card);
-    // A damage roll (not healing) with a selected target → the IMPACT reveal: the target token framed, attacker + art
-    // at the top, the rolled total as the big number, themed by the damage type. Pure presentation — no HP is touched.
-    const isImpact = card.kind === 'damage' && !card.heal && !!card.target;
+    // ANY attack or damage roll WITH a selected target → the IMPACT reveal: the target framed in the centre, the
+    // attacker + action art in a sub-circle at the top, the rolled total as the big number. Pure presentation.
+    const isImpact = (card.kind === 'damage' || card.kind === 'attack') && !!card.target;
     if (isImpact) {
-      const dtype = card.damageType || (card.damageTypes && card.damageTypes[0]) || '';
+      const isDmg = card.kind === 'damage';
+      const dtype = isDmg ? (card.damageType || (card.damageTypes && card.damageTypes[0]) || '') : '';
       const payload = {
-        phase: 'impact', total: card.total, dtype, heal: false, action: card.action || '',
-        who: card.who || actor?.name || '', actorImg: actor?.img || '', img: card.img || '',
+        phase: 'impact', kind: card.kind, total: card.total, dtype, heal: !!card.heal, nat, action: card.action || '',
+        who: card.who || actor?.name || '', actorImg: actor?.img || '', img: card.img || '', hue,
         targetName: card.target.name || '', targetImg: card.target.img || '',
-        applyIds: card.target.id ? [card.target.id] : [],   // canvas pan target only (read-only camera move)
-        cue: 'dmg.' + dmgKey(dtype),
+        targets: (card.targets || []).map(t => ({ name: t.name || '', img: t.img || '' })),   // ALL targets → overlay shows each
+        applyIds: (card.targets || []).map(t => t && t.id).filter(Boolean),   // ALL target ids → camera frames them all (read-only)
+        cue: isDmg ? ('dmg.' + dmgKey(dtype)) : (nat === 20 ? 'crit' : nat === 1 ? 'fumble' : 'roll'),
       };
       playStinger(payload);
       try { game.socket?.emit(`module.${NS}`, { t: 'stinger', payload }); } catch (e) {}
@@ -1260,7 +1273,7 @@ Hooks.once('init', () => {
   game.settings.register(NS, 'enabled', { name: 'Connect to D&D Beyond', hint: 'Open a connection to the D&D Beyond game log (via your ddb-proxy) to receive rolls. Turn off to use this module only for local Foundry rolls.', scope: 'world', config: true, type: Boolean, default: true });
   // CLIENT scope: the cobalt cookie is a D&D Beyond credential only the GM's client uses (never synced to players).
   game.settings.register(NS, 'connectionMode', { name: 'Connection mode', hint: 'Hosted (recommended): connect through the shared XtraPklz proxy — zero setup. Your D&D Beyond session cookie passes through that server ONLY to authenticate and is never stored. The free shared server may take ~30–60s to wake on the first connect of a session. · Local: run your own ddb-proxy and set its URL below — full privacy, no shared-server limits.', scope: 'world', config: true, type: String, choices: { hosted: 'Hosted — easy, no setup (recommended)', local: 'Local — your own proxy (advanced)' }, default: 'hosted' });
-  game.settings.register(NS, 'cobaltCookie', { name: 'CobaltSession cookie', hint: 'Your dndbeyond.com CobaltSession cookie. Use the "Get / paste my cookie" button below for a guided walkthrough. Stored only in this browser (never shared with players); re-enter it per device you GM from.', scope: 'client', config: true, type: String, default: '' });
+  game.settings.register(NS, 'cobaltCookie', { name: 'CobaltSession cookie', hint: 'Your dndbeyond.com CobaltSession cookie. Use the "Get / paste my cookie" button above for a guided walkthrough. Stored only in this browser (never shared with players); re-enter it per device you GM from.', scope: 'client', config: true, type: String, default: '' });
   game.settings.register(NS, 'proxyUrl', { name: 'Local proxy URL', hint: 'Only used in LOCAL connection mode: your own ddb-proxy base URL, e.g. http://localhost:3000 (no trailing slash). Ignored in Hosted mode.', scope: 'world', config: true, type: String, default: '' });
   game.settings.register(NS, 'campaignId', { name: 'Campaign (game) ID', hint: 'D&D Beyond campaign/game ID.', scope: 'world', config: true, type: String, default: '' });
   game.settings.register(NS, 'userId', { name: 'D&D Beyond username (or user ID)', hint: 'Your D&D Beyond username works here — you do NOT need the numeric user ID. (The numeric ID from DevTools also works if you prefer.)', scope: 'world', config: true, type: String, default: '' });
@@ -1292,7 +1305,8 @@ Hooks.once('init', () => {
       for (const [key, label] of Object.entries(SEC)) {
         const field = root.querySelector(`[name="${NS}.${key}"]`); const row = field?.closest('.form-group'); if (!row) continue;
         const h = document.createElement('h3'); h.textContent = label; h.className = 'ddbx-int-section';
-        h.style.cssText = 'margin:16px 0 6px;padding-bottom:4px;border-bottom:2px solid var(--color-border-light-primary,#782e22);font-weight:700';
+        // Pin an explicit font so the header isn't shrunk/restyled by Foundry's or a font module's global h3 rules.
+        h.style.cssText = 'margin:16px 0 6px;padding-bottom:4px;border-bottom:2px solid var(--color-border-light-primary,#782e22);font:700 16px/1.35 var(--font-primary,"Signika",sans-serif);color:inherit;text-transform:none;letter-spacing:.01em;';
         row.parentNode.insertBefore(h, row);
       }
     } catch (e) { console.warn('DDB Integrator | settings sections', e); }

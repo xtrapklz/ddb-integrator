@@ -430,7 +430,7 @@ async function synthDamageCard(card) {
     await DamageRoll.build(
       { rolls: [{ parts: [String(total)], options: { type: dtype, types: dtype ? [dtype] : [], properties: [] } }], hookNames: ['damage'] },
       { configure: false },
-      { create: true, data: { flavor: `${card.action || 'Damage'} — Damage Roll`, speaker: speakerFor(card), flags: synthFlags(card, 'damage') } }
+      { create: true, data: { flavor: `${card.action || 'Damage'} — Damage Roll`, speaker: speakerFor(card), flags: synthFlags(card, 'damage'), whisper: nativeWhisper() } }
     );
   } catch (e) { console.warn('DDB Integrator | synthDamageCard', e); }
 }
@@ -461,7 +461,7 @@ async function synthAttackCard(card) {
     await roll.evaluate();
     // Force the d20 to the DDB face (accessing roll.d20 upgrades terms[0] to a D20Die first) and pin the displayed total.
     try { const die = roll.d20; if (die?.results?.length) { die.results[0].result = face; die.results[0].active = true; delete die.results[0].discarded; } roll._total = total; } catch (e) {}
-    await D20Roll.toMessage([roll], { flavor: `${card.action || 'Attack'} — Attack Roll`, speaker: speakerFor(card), flags: synthFlags(card, 'attack') }, { create: true });
+    await D20Roll.toMessage([roll], { flavor: `${card.action || 'Attack'} — Attack Roll`, speaker: speakerFor(card), flags: synthFlags(card, 'attack'), whisper: nativeWhisper() }, { create: true });
   } catch (e) { console.warn('DDB Integrator | synthAttackCard', e); }
 }
 // Shared dnd5e flags for a synthesized native card: roll type + targets (name/img/actor-uuid/AC), plus the real
@@ -478,6 +478,8 @@ function synthFlags(card, type) {
   }
   return { dnd5e, [NS]: { synth: true } };
 }
+// Whisper list for the native cards: GMs only when "Native cards: GM only" is on (so players see only the stylized card), else public ([]).
+function nativeWhisper() { try { return game.settings.get(NS, 'nativeGmOnly') ? ChatMessage.getWhisperRecipients('GM').map(u => u.id) : []; } catch (e) { return []; } }
 // Build the dnd5e.targets flag (name, img, actor uuid, AC) from the captured target tokens — for the Apply tray's TARGETED tab.
 function buildNativeTargets(targets) {
   const out = [];
@@ -799,6 +801,29 @@ function playCueSound(url) {
 }
 // Damage-type → theme hue for the impact cinematic (purely cosmetic colouring of the flourish).
 function damageHue(t) { t = String(t || '').toLowerCase(); if (/fire/.test(t)) return 22; if (/cold/.test(t)) return 195; if (/light/.test(t)) return 55; if (/acid/.test(t)) return 95; if (/poison/.test(t)) return 110; if (/necro/.test(t)) return 280; if (/radiant/.test(t)) return 48; if (/psychic/.test(t)) return 300; if (/force/.test(t)) return 265; if (/thunder/.test(t)) return 275; if (/slash|pierc|bludgeon/.test(t)) return 0; return 0; }
+// The primary damage type from a damage chat message's rolls — for the impact's colour + sound when damage is applied.
+function damageTypeFromMessage(msg) { try { for (const r of (msg?.rolls || [])) { const t = r?.options?.type; if (t) return String(t); } } catch (e) {} return ''; }
+// GM: when damage is APPLIED, fire the impact cinematic showing the FINAL applied amount (post ×2 / resistance) on the
+// damaged target. Fires for any damage application (native or synthesized card), broadcast to every player.
+function onDamageApplied(actor, amount, options) {
+  try {
+    if (!game.user?.isGM) return;
+    const amt = Math.round(Number(amount) || 0);
+    if (amt <= 0) return;   // damage only (healing is negative)
+    const tok = actor?.getActiveTokens?.()?.[0] || null;
+    const dtype = damageTypeFromMessage(options?.originatingMessage);
+    const payload = {
+      phase: 'impact', kind: 'damage', total: amt, dtype, heal: false, nat: null, action: '',
+      who: '', actorImg: '', img: '', hue: null,
+      targetName: actor?.name || '', targetImg: actor?.img || '',
+      targets: [{ name: actor?.name || '', img: actor?.img || '' }],
+      applyIds: tok?.id ? [tok.id] : [], cue: 'dmg.' + dmgKey(dtype),
+    };
+    playStinger(payload);
+    try { game.socket?.emit(`module.${NS}`, { t: 'stinger', payload }); } catch (e) {}
+  } catch (e) { console.warn('DDB Integrator | onDamageApplied', e); }
+}
+Hooks.on('dnd5e.applyDamage', onDamageApplied);   // fire the damage impact when the GM applies damage (post-multiplier)
 // Damage-type → a full-screen effect wash for the impact cinematic.
 function damageFx(t) { t = String(t || '').toLowerCase();
   if (/slash/.test(t)) return '<div class="ddbx-fx fx-slash"><span></span><span></span><span></span></div>';
@@ -1076,6 +1101,9 @@ function announce(card) {
   try {
     if (!game.user?.isGM) return;
     if (GroupRoll.active) return;   // a Group Check / Contest owns the screen — never overlay a single-roll stinger
+    // A DAMAGE roll fires NO cinematic at roll time — its impact reveal is deferred to when the GM APPLIES the damage
+    // (the dnd5e.applyDamage hook below), so the number shown reflects any ×2 / resistance. The stylized card still posts.
+    if (card.kind === 'damage') return;
     const actor = card.actorId ? game.actors.get(card.actorId) : null;
     const nat = card.nat ?? null;
     const isGen = card.kind === 'check' || card.kind === 'save' || card.kind === 'init' || card.kind === 'death';
@@ -1083,7 +1111,7 @@ function announce(card) {
     const m = kindMeta(card);
     // ANY attack or damage roll WITH a selected target → the IMPACT reveal: the target framed in the centre, the
     // attacker + action art in a sub-circle at the top, the rolled total as the big number. Pure presentation.
-    const isImpact = (card.kind === 'damage' || card.kind === 'attack') && !!card.target;
+    const isImpact = card.kind === 'attack' && !!card.target;   // damage impact is deferred to apply-time (see applyDamage hook)
     if (isImpact) {
       const isDmg = card.kind === 'damage';
       const dtype = isDmg ? (card.damageType || (card.damageTypes && card.damageTypes[0]) || '') : '';
@@ -1358,6 +1386,7 @@ Hooks.once('init', () => {
   game.settings.register(NS, 'characterMapping', { scope: 'world', config: false, type: Object, default: {} });
   // ─── Cards ───
   game.settings.register(NS, 'ddbApplyCard', { name: 'Native cards for D&D Beyond rolls', hint: 'D&D Beyond rolls have no native card of their own. When on, also post the system’s native cards for them — the damage card with its Apply tray (½/×2 multipliers, resistance, temp HP) and the attack card with hit/miss vs the target’s AC — so D&D Beyond rolls behave just like local Foundry rolls. Your stylized card + cinematic still post too. Applying is always a GM click; nothing is automatic.', scope: 'world', config: true, type: Boolean, default: true });
+  game.settings.register(NS, 'nativeGmOnly', { name: 'Native cards: GM only', hint: 'Whisper the native dnd5e cards (the AC hit/miss card and the damage Apply card) to the GM only, so players see just your stylized card + cinematic. Turn off to show the native cards to everyone.', scope: 'world', config: true, type: Boolean, default: true });
   // ─── Cinematics ───
   game.settings.register(NS, 'cinematics', { name: 'Cinematic roll reveals', hint: 'Show a brief full-screen flourish when a roll lands — the roller portrait, the total, and the kind, with gold flair for a natural 20 and red for a natural 1. Shown to all players.', scope: 'world', config: true, type: Boolean, default: true });
   game.settings.register(NS, 'cinematicDuration', { name: 'Cinematic duration (seconds)', hint: 'How long a single-roll cinematic stays on screen before it fades (also sets the spacing between back-to-back reveals and the group result reveal). Group Check / Contest / Initiative gathering stay up until you finalize them.', scope: 'world', config: true, type: Number, range: { min: 1.5, max: 10, step: 0.5 }, default: 3.5 });
@@ -1403,7 +1432,7 @@ Hooks.once('ready', () => {
       else if (m?.t === 'groupclear') clearGroupLocal();
     });
   } catch (e) {}
-  if (!game.user.isGM) { console.log('DDB Integrator | ready (v0.1.6)'); return; }
+  if (!game.user.isGM) { console.log('DDB Integrator | ready (v0.1.7)'); return; }
   window.DDBIntegrator = { reconnect, startOwnSocket, editMapping, editCookie, editSounds, fetchCampaignCharacters, startGroup, finalizeGroup, cancelGroup };
   // Replace/suppress Foundry's native dnd5e roll cards — this module posts its own. ONLY native ROLL cards are
   // touched (no item/usage interception, no automation): a GM roll renders our card too, then we keep the native
@@ -1414,9 +1443,12 @@ Hooks.once('ready', () => {
       const f = message.flags?.dnd5e; if (!f) return;
       const isNativeRoll = f.messageType === 'roll' && !!message.rolls?.length;
       if (!isNativeRoll) return;   // we never touch non-roll cards
-      // The GM's own roll → ALSO render our stylized card + cinematic, but HIDE NOTHING: the native card stays exactly
-      // as Foundry posted it (public, all its buttons intact). keepNative=true so we don't double the dice animation.
-      if (game.user.isGM) renderLocalMessage(message, true);
+      // The GM's own roll → ALSO render our stylized card + cinematic. keepNative=true so we don't double the dice
+      // animation. With "Native cards: GM only" on, whisper the native card to the GM so players see only the stylized one.
+      if (game.user.isGM) {
+        renderLocalMessage(message, true);
+        if (game.settings.get(NS, 'nativeGmOnly')) { try { message.updateSource({ whisper: ChatMessage.getWhisperRecipients('GM').map(u => u.id), blind: false }); } catch (e) {} }
+      }
     } catch (e) { console.error('DDB Integrator | intercept error', e); }
   });
   // (GM toolbar Group Check / Contest tools are registered at TOP LEVEL — see the getSceneControlButtons hook above
@@ -1451,5 +1483,5 @@ Hooks.once('ready', () => {
   // Insurance: force one scene-controls re-render now that everything is wired, in case the controls had already
   // painted. The top-level getSceneControlButtons hook is what makes the tools appear; this just guarantees a paint.
   try { ui.controls?.render?.(true); } catch (e) {}
-  console.log('DDB Integrator | ready (v0.1.6)');
+  console.log('DDB Integrator | ready (v0.1.7)');
 });

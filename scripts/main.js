@@ -240,7 +240,7 @@ function sanitizeStinger(p) {
     dtype: str(p.dtype, 24), heal: !!p.heal, kind: str(p.kind, 16), nat: num(p.nat),
     targetName: str(p.targetName), targetImg: cleanUrl(p.targetImg),
     targets: Array.isArray(p.targets) ? p.targets.slice(0, 24).map(t => ({ name: str(t?.name, 80), img: cleanUrl(t?.img) })).filter(t => t.img || t.name) : [],
-    applyIds, noPan: !!p.noPan,
+    applyIds, noPan: !!p.noPan, dur: Number.isFinite(p.dur) ? Math.max(100, Math.round(p.dur)) : undefined,
   };
 }
 // Harden a GROUP cinematic payload received over the socket before it reaches innerHTML (mirrors sanitizeStinger).
@@ -412,12 +412,18 @@ function cardTargets(card) {
 // from damageTypes[idx]; same-type rolls merge into one chip; the total accumulates.
 function addDmgToCard(data, card, idx) {
   data.damage = data.damage || { total: 0, types: [] };
-  const all = card.damageTypes || [];
-  const type = all[idx] || card.damageType || all[0] || '';
-  const val = Math.max(0, Math.round(Number(card.total) || 0));
-  const ex = type ? data.damage.types.find(t => t.type === type) : null;
-  if (ex) ex.value += val; else data.damage.types.push({ type, value: val });
-  data.damage.total += val;
+  // Local rolls carry an exact per-type breakdown (card.damageParts). DDB sends one roll PER type, so fall back to the
+  // action's type order (damageTypes[idx]). Either way, same-type values merge into one chip and the total accumulates.
+  const parts = (Array.isArray(card.damageParts) && card.damageParts.length)
+    ? card.damageParts
+    : [{ type: (card.damageTypes || [])[idx] || card.damageType || (card.damageTypes || [])[0] || '', value: Math.max(0, Math.round(Number(card.total) || 0)) }];
+  for (const p of parts) {
+    const type = p.type || '';
+    const val = Math.max(0, Math.round(Number(p.value) || 0));
+    const ex = type ? data.damage.types.find(t => t.type === type) : null;
+    if (ex) ex.value += val; else data.damage.types.push({ type, value: val });
+    data.damage.total += val;
+  }
 }
 function scheduleCardUpdate(rec) {
   clearTimeout(rec.timer);   // coalesce the per-type damage rolls (they arrive in a burst) into one re-render
@@ -457,7 +463,7 @@ async function present(p) {
       who: p.who, action: p.action, actorId: actor?.id || null,
       kind: p.kind, heal: !!p.heal, ability: p.ability || null,
       total: Number(p.total) || 0, nat: p.nat ?? null, advKind: p.advKind || '',
-      damageType: p.damageType || '', damageTypes: p.damageTypes || [],
+      damageType: p.damageType || '', damageTypes: p.damageTypes || [], damageParts: p.damageParts || null,
       img: p.img || '', actorImg: actor?.img || '', formula: p.formula || '',
       target: targets[0] || null, targets,   // PRESENTATION ONLY — first frames the impact cinematic; the card lists all.
     };
@@ -695,11 +701,15 @@ function renderLocalMessage(message, keepNative) {
   // Native card is normally suppressed, so animate the dice ourselves (skip if the GM keeps native cards — its own
   // Dice So Nice would already show them, and re-showing would double the dice).
   try { if (!keepNative && game.dice3d) game.dice3d.showForRoll(roll, game.user, true); } catch (e) {}
+  // Local damage can carry MULTIPLE types in one message (a monster's multi-type attack), so split it per type up front.
+  const healFlag = ctx.isHeal || rtype === 'heal';
+  const dmgParts = (kind === 'damage' && !healFlag) ? damagePartsFromRolls(message.rolls) : null;
+  const total = (dmgParts && dmgParts.length) ? dmgParts.reduce((s, p) => s + p.value, 0) : Number(roll.total ?? 0);
   present({
     who, action: label, actorId: actor?.id || null,
-    kind, heal: ctx.isHeal || rtype === 'heal', ability: (kind === 'check' || kind === 'save') ? ability : null,
-    total: Number(roll.total ?? 0), nat,
-    damageType: ctx.damageType, damageTypes: ctx.damageTypes,
+    kind, heal: healFlag, ability: (kind === 'check' || kind === 'save') ? ability : null,
+    total, nat,
+    damageType: ctx.damageType, damageTypes: ctx.damageTypes, damageParts: dmgParts && dmgParts.length ? dmgParts : undefined,
     dice: null, advKind: '', formula: roll.formula, img,
   });
 }
@@ -932,6 +942,23 @@ function playCueSound(url) {
 function damageHue(t) { t = String(t || '').toLowerCase(); if (/fire/.test(t)) return 22; if (/cold/.test(t)) return 195; if (/light/.test(t)) return 55; if (/acid/.test(t)) return 95; if (/poison/.test(t)) return 110; if (/necro/.test(t)) return 280; if (/radiant/.test(t)) return 48; if (/psychic/.test(t)) return 300; if (/force/.test(t)) return 265; if (/thunder/.test(t)) return 275; if (/slash|pierc|bludgeon/.test(t)) return 0; return 0; }
 // The primary damage type from a damage chat message's rolls — for the impact's colour + sound when damage is applied.
 function damageTypeFromMessage(msg) { try { for (const r of (msg?.rolls || [])) { const t = r?.options?.type; if (t) return String(t); } } catch (e) {} return ''; }
+// Per-type breakdown of a set of damage rolls. Uses dnd5e's own aggregateDamageRolls (splits even a single mixed-flavor
+// roll by type), falling back to one entry per roll. Powers the per-type chips on local cards + the per-type impact flashes.
+function damagePartsFromRolls(rolls) {
+  try {
+    const agg = game.dnd5e?.dice?.aggregateDamageRolls;
+    const list = agg ? agg(rolls || [], { respectProperties: false }) : (rolls || []);
+    return list.map(r => ({ type: String(r?.options?.type || ''), value: Math.max(0, Math.round(Number(r?.total) || 0)) })).filter(p => p.type || p.value);
+  } catch (e) {
+    try { return (rolls || []).map(r => ({ type: String(r?.options?.type || ''), value: Math.max(0, Math.round(Number(r?.total) || 0)) })).filter(p => p.type || p.value); } catch (e2) { return []; }
+  }
+}
+// What to flash per impact: one type → the APPLIED amount (post-multiplier); multiple types → each rolled per-type value.
+function damagePartsFromMessage(msg, applied) {
+  const typed = damagePartsFromRolls(msg?.rolls);
+  if (typed.length <= 1) return [{ type: typed[0]?.type || '', value: Math.max(0, Math.round(Number(applied) || 0)) }];
+  return typed;
+}
 // GM: when damage is APPLIED, fire the impact cinematic showing the FINAL applied amount (post ×2 / resistance) on the
 // damaged target. dnd5e fires this hook ONCE PER target, so we BUFFER the burst and conduct it as one camera sequence:
 // zoom to the first target, hold its overlay, then PAN (staying zoomed) to the next, and only zoom back out + re-centre on
@@ -943,7 +970,8 @@ function onDamageApplied(actor, amount, options) {
     const amt = Math.round(Number(amount) || 0);
     if (amt <= 0) return;   // damage only (healing is negative)
     _applyBuf.push({
-      actor, amt, token: actor?.getActiveTokens?.()?.[0] || null, dtype: damageTypeFromMessage(options?.originatingMessage),
+      actor, amt, token: actor?.getActiveTokens?.()?.[0] || null,
+      parts: damagePartsFromMessage(options?.originatingMessage, amt),   // per-type flashes (one type → the applied amount)
       stylizedId: options?.originatingMessage?.flags?.[NS]?.stylizedId || null, multiplier: options?.multiplier,
     });
     const at = attackerTokenFromMessage(options?.originatingMessage); if (at) _applyAttacker = at;
@@ -959,41 +987,50 @@ function attackerTokenFromMessage(msg) {
   } catch (e) {}
   return null;
 }
-// One target's impact overlay. noPan: the BATCH owns the camera, so the overlay itself doesn't pan.
-function castApplyOverlay(it) {
+// ONE impact flash on a target (single damage type, short on-screen duration). noPan: the batch owns the camera.
+function castImpact(actor, token, type, value, dur) {
   const payload = {
-    phase: 'impact', kind: 'damage', total: it.amt, dtype: it.dtype || '', heal: false, nat: null, action: '', noPan: true,
+    phase: 'impact', kind: 'damage', total: value, dtype: type || '', heal: false, nat: null, action: '', noPan: true, dur,
     who: '', actorImg: '', img: '', hue: null,
-    targetName: it.actor?.name || '', targetImg: it.actor?.img || '',
-    targets: [{ name: it.actor?.name || '', img: it.actor?.img || '' }],
-    applyIds: it.token?.id ? [it.token.id] : [], cue: 'dmg.' + dmgKey(it.dtype || ''),
+    targetName: actor?.name || '', targetImg: actor?.img || '',
+    targets: [{ name: actor?.name || '', img: actor?.img || '' }],
+    applyIds: token?.id ? [token.id] : [], cue: 'dmg.' + dmgKey(type || ''),
   };
   playStinger(payload);
   try { game.socket?.emit(`module.${NS}`, { t: 'stinger', payload }); } catch (e) {}
 }
-// Conduct the buffered applies: zoom to each target in turn (staying zoomed), overlay it, then zoom out on the attacker.
+// Conduct the buffered applies: zoom to each TARGET once, flash each of its damage types fast, then zoom out on the attacker.
 async function flushApplyBuffer() {
   if (_applyRunning) { _applyTimer = setTimeout(flushApplyBuffer, 150); return; }   // a sequence is mid-run — retry shortly
   const items = _applyBuf.slice(); _applyBuf = [];
   const attacker = _applyAttacker; _applyAttacker = null;
   if (!items.length) return;
   for (const it of items) { if (it.stylizedId) updateStylizedDamage(it.stylizedId, it.amt, it.multiplier); }
+  // Group apply events by TARGET so a multi-type hit flashes its types on one framing instead of re-zooming per type.
+  const groups = [], byKey = new Map();
+  for (const it of items) {
+    const k = it.token?.id || it.actor?.id || ('?' + groups.length);
+    let g = byKey.get(k); if (!g) { g = { token: it.token, actor: it.actor, flashes: [] }; byKey.set(k, g); groups.push(g); }
+    const parts = (Array.isArray(it.parts) && it.parts.length) ? it.parts : [{ type: '', value: it.amt }];
+    for (const p of parts) g.flashes.push({ type: p.type, value: p.value });
+  }
   let visuals = true; try { visuals = game.settings.get(NS, 'cinematics'); } catch (e) {}
-  if (!visuals) { for (const it of items) castApplyOverlay(it); return; }   // visuals off → just the cues, no camera work
+  if (!visuals) { for (const g of groups) for (const f of g.flashes) castImpact(g.actor, g.token, f.type, f.value, cineMs()); return; }
   _applyRunning = true;
-  // Capture the TRUE original view ONCE, LOCALLY. If an attack roll just zoomed in, its stored pre-attack view IS the
-  // original; otherwise the current view is. Then cancel that attack impact's pending restore timer — left armed, it would
-  // fire mid-sequence, yank the camera, AND null the shared view out from under our final zoom-out (the bug being fixed).
+  // Capture the TRUE original view ONCE, LOCALLY (pre-attack view if an attack just zoomed in, else the current view), and
+  // cancel the attack impact's pending restore timer so it can't yank the camera or null the view out from under us.
   let origin = _preImpactView ? { ..._preImpactView } : null;
   if (!origin) { try { if (canvas?.ready) origin = { x: canvas.stage.pivot.x, y: canvas.stage.pivot.y, scale: canvas.stage.scale.x }; } catch (e) {} }
   try { clearTimeout(_restoreTimer); } catch (e) {}
   _preImpactView = null;   // the batch owns the camera now
+  const base = cineMs();
   try {
-    for (const it of items) {
-      if (it.token) panToTokens([it.token]);   // zoom to this target (stay zoomed through the whole sequence)
-      await delay(520);                        // let the zoom centre BEFORE the overlay (the requested half-second)
-      castApplyOverlay(it);
-      await delay(cineMs() + 200);             // hold the overlay, then move on to the next target
+    for (const g of groups) {
+      if (g.token) panToTokens([g.token]);   // zoom to this target ONCE — it stays zoomed for all its damage types
+      await delay(300);                       // brief beat so the zoom centres before the first flash
+      const multi = g.flashes.length > 1;
+      const fdur = multi ? Math.max(430, Math.round(base * 0.28)) : Math.max(600, Math.round(base * 0.46));   // faster: a fraction of the duration setting
+      for (const f of g.flashes) { castImpact(g.actor, g.token, f.type, f.value, fdur); await delay(fdur + 320); }
     }
     // Zoom back OUT to the original scale, re-centred on the triggering actor (or restore the original view if no token).
     if (attacker && origin) { try { const c = attacker.center; canvas.animatePan({ x: c.x, y: c.y, scale: origin.scale, duration: 680 }); } catch (e) {} }
@@ -1233,7 +1270,7 @@ function pumpStingers() {
   const p = _stQ.shift(); _stBusy = true;
   try { renderStinger(p); } catch (e) { console.warn('DDB Integrator | stinger', e); }
   let visuals = true; try { visuals = game.settings.get(NS, 'cinematics'); } catch (e) {}
-  const occ = !visuals ? 0 : (cineMs() + (p.phase === 'impact' ? 200 : 0));
+  const occ = !visuals ? 0 : (Number.isFinite(p.dur) ? p.dur : (cineMs() + (p.phase === 'impact' ? 200 : 0)));
   setTimeout(() => { _stBusy = false; pumpStingers(); }, occ + 300);
 }
 // Roll-reveal flourish (roller portrait + roll total + kind, gold for a nat 20, red for a nat 1), OR — for a damage
@@ -1250,7 +1287,7 @@ async function renderStinger(p) {
     const layout = 'orbit';
     const impact = p.phase === 'impact';
     const crit = p.tone === 'crit' || p.tone === 'critmiss';
-    const dur = cineMs() + (impact ? 200 : 0);
+    const dur = Number.isFinite(p.dur) ? p.dur : (cineMs() + (impact ? 200 : 0));
     // Colour: an impact themes off its damage type (gold-ish heal); else gold for a crit, red for a crit-fail, then art hue.
     let H;
     if (impact) H = p.heal ? 140 : p.kind === 'damage' ? (damageHue(p.dtype) ?? 0) : (p.hue != null ? p.hue : (p.nat === 20 ? 45 : p.nat === 1 ? 0 : 210));
@@ -1650,7 +1687,7 @@ Hooks.once('ready', () => {
       else if (m?.t === 'groupclear') clearGroupLocal();
     });
   } catch (e) {}
-  if (!game.user.isGM) { console.log('DDB Integrator | ready (v0.2.0)'); return; }
+  if (!game.user.isGM) { console.log('DDB Integrator | ready (v0.2.1)'); return; }
   window.DDBIntegrator = { reconnect, startOwnSocket, editMapping, editCookie, editSounds, fetchCampaignCharacters, startGroup, finalizeGroup, cancelGroup };
   // Replace/suppress Foundry's native dnd5e roll cards — this module posts its own. ONLY native ROLL cards are
   // touched (no item/usage interception, no automation): a GM roll renders our card too, then we keep the native
@@ -1701,5 +1738,5 @@ Hooks.once('ready', () => {
   // Insurance: force one scene-controls re-render now that everything is wired, in case the controls had already
   // painted. The top-level getSceneControlButtons hook is what makes the tools appear; this just guarantees a paint.
   try { ui.controls?.render?.(true); } catch (e) {}
-  console.log('DDB Integrator | ready (v0.2.0)');
+  console.log('DDB Integrator | ready (v0.2.1)');
 });

@@ -226,7 +226,7 @@ function sanitizeStinger(p) {
     dtype: str(p.dtype, 24), heal: !!p.heal, kind: str(p.kind, 16), nat: num(p.nat),
     targetName: str(p.targetName), targetImg: cleanUrl(p.targetImg),
     targets: Array.isArray(p.targets) ? p.targets.slice(0, 24).map(t => ({ name: str(t?.name, 80), img: cleanUrl(t?.img) })).filter(t => t.img || t.name) : [],
-    applyIds,
+    applyIds, noPan: !!p.noPan,
   };
 }
 // Harden a GROUP cinematic payload received over the socket before it reaches innerHTML (mirrors sanitizeStinger).
@@ -814,27 +814,67 @@ function damageHue(t) { t = String(t || '').toLowerCase(); if (/fire/.test(t)) r
 // The primary damage type from a damage chat message's rolls — for the impact's colour + sound when damage is applied.
 function damageTypeFromMessage(msg) { try { for (const r of (msg?.rolls || [])) { const t = r?.options?.type; if (t) return String(t); } } catch (e) {} return ''; }
 // GM: when damage is APPLIED, fire the impact cinematic showing the FINAL applied amount (post ×2 / resistance) on the
-// damaged target. Fires for any damage application (native or synthesized card), broadcast to every player.
+// damaged target. dnd5e fires this hook ONCE PER target, so we BUFFER the burst and conduct it as one camera sequence:
+// zoom to the first target, hold its overlay, then PAN (staying zoomed) to the next, and only zoom back out + re-centre on
+// the attacker after the last. Each overlay waits a beat after the camera settles, so the zoom lands first.
+let _applyBuf = [], _applyTimer = null, _applyAttacker = null, _applyRunning = false;
 function onDamageApplied(actor, amount, options) {
   try {
     if (!game.user?.isGM) return;
     const amt = Math.round(Number(amount) || 0);
     if (amt <= 0) return;   // damage only (healing is negative)
-    const tok = actor?.getActiveTokens?.()?.[0] || null;
-    const dtype = damageTypeFromMessage(options?.originatingMessage);
-    const payload = {
-      phase: 'impact', kind: 'damage', total: amt, dtype, heal: false, nat: null, action: '',
-      who: '', actorImg: '', img: '', hue: null,
-      targetName: actor?.name || '', targetImg: actor?.img || '',
-      targets: [{ name: actor?.name || '', img: actor?.img || '' }],
-      applyIds: tok?.id ? [tok.id] : [], cue: 'dmg.' + dmgKey(dtype),
-    };
-    playStinger(payload);
-    try { game.socket?.emit(`module.${NS}`, { t: 'stinger', payload }); } catch (e) {}
-    // Update the public stylized card's total to the applied amount (e.g. ×2), so it matches the cinematic + the real damage dealt.
-    const sid = options?.originatingMessage?.flags?.[NS]?.stylizedId;
-    if (sid) updateStylizedDamage(sid, amt, options?.multiplier);
+    _applyBuf.push({
+      actor, amt, token: actor?.getActiveTokens?.()?.[0] || null, dtype: damageTypeFromMessage(options?.originatingMessage),
+      stylizedId: options?.originatingMessage?.flags?.[NS]?.stylizedId || null, multiplier: options?.multiplier,
+    });
+    const at = attackerTokenFromMessage(options?.originatingMessage); if (at) _applyAttacker = at;
+    clearTimeout(_applyTimer); _applyTimer = setTimeout(flushApplyBuffer, 140);   // collect the per-target burst into one run
   } catch (e) { console.warn('DDB Integrator | onDamageApplied', e); }
+}
+// The attacker's token (to re-centre on after the last target), from the damage card's speaker.
+function attackerTokenFromMessage(msg) {
+  try {
+    const sp = msg?.speaker; if (!sp) return null;
+    if (sp.token) { const scn = sp.scene ? game.scenes.get(sp.scene) : canvas.scene; const t = scn?.tokens?.get(sp.token)?.object || canvas.tokens?.get?.(sp.token); if (t) return t; }
+    if (sp.actor) { const t = game.actors.get(sp.actor)?.getActiveTokens?.()?.[0]; if (t) return t; }
+  } catch (e) {}
+  return null;
+}
+// One target's impact overlay. noPan: the BATCH owns the camera, so the overlay itself doesn't pan.
+function castApplyOverlay(it) {
+  const payload = {
+    phase: 'impact', kind: 'damage', total: it.amt, dtype: it.dtype || '', heal: false, nat: null, action: '', noPan: true,
+    who: '', actorImg: '', img: '', hue: null,
+    targetName: it.actor?.name || '', targetImg: it.actor?.img || '',
+    targets: [{ name: it.actor?.name || '', img: it.actor?.img || '' }],
+    applyIds: it.token?.id ? [it.token.id] : [], cue: 'dmg.' + dmgKey(it.dtype || ''),
+  };
+  playStinger(payload);
+  try { game.socket?.emit(`module.${NS}`, { t: 'stinger', payload }); } catch (e) {}
+}
+// Conduct the buffered applies: zoom to each target in turn (staying zoomed), overlay it, then zoom out on the attacker.
+async function flushApplyBuffer() {
+  if (_applyRunning) { _applyTimer = setTimeout(flushApplyBuffer, 150); return; }   // a sequence is mid-run — retry shortly
+  const items = _applyBuf.slice(); _applyBuf = [];
+  const attacker = _applyAttacker; _applyAttacker = null;
+  if (!items.length) return;
+  for (const it of items) { if (it.stylizedId) updateStylizedDamage(it.stylizedId, it.amt, it.multiplier); }
+  let visuals = true; try { visuals = game.settings.get(NS, 'cinematics'); } catch (e) {}
+  if (!visuals) { for (const it of items) castApplyOverlay(it); return; }   // visuals off → just the cues, no camera work
+  _applyRunning = true;
+  try {
+    storePreImpactView();
+    for (const it of items) {
+      if (it.token) panToTokens([it.token]);   // zoom to this target (stay zoomed through the whole sequence)
+      await delay(520);                        // let the zoom centre BEFORE the overlay (the requested half-second)
+      castApplyOverlay(it);
+      await delay(cineMs() + 200);             // hold the overlay, then move on to the next target
+    }
+    // Zoom back OUT to the pre-impact scale, re-centred on the triggering actor (or restore the original view if no token).
+    const back = _preImpactView ? { ..._preImpactView } : null;
+    if (attacker) { try { const c = attacker.center; canvas.animatePan({ x: c.x, y: c.y, scale: back?.scale ?? canvas.stage.scale.x, duration: 680 }); } catch (e) {} }
+    else if (back) { try { canvas.animatePan({ ...back, duration: 680 }); } catch (e) {} }
+  } finally { clearPreImpactView(); _applyRunning = false; if (_applyBuf.length) _applyTimer = setTimeout(flushApplyBuffer, 80); }
 }
 // Re-render the stylized damage card with the APPLIED total (and the multiplier as a pill). Stored cardData lets us rebuild it.
 async function updateStylizedDamage(msgId, applied, multiplier) {
@@ -946,24 +986,38 @@ function liftDice(on) {
 // Zoom + pan the canvas to frame the target token during the impact cinematic, then drift back. READ-ONLY: this
 // only moves the camera (canvas.animatePan) — it never touches token or actor data. Resolves the token by its id.
 let _preImpactView = null, _restoreTimer = null;
-function panToImpactByActors(ids) {
+const delay = (ms) => new Promise(r => setTimeout(r, ms));
+// Resolve token placeables from token-ids OR actor-ids.
+function resolveTokens(ids) {
+  const toks = [], seen = new Set();
+  for (const id of new Set(ids || [])) {
+    const byTok = canvas.tokens?.get?.(id);
+    if (byTok) { if (!seen.has(byTok.id)) { seen.add(byTok.id); toks.push(byTok); } continue; }
+    for (const t of (canvas.tokens?.placeables || [])) { if (t.actor?.id === id && !seen.has(t.id)) { seen.add(t.id); toks.push(t); } }
+  }
+  return toks;
+}
+// Pan/zoom the canvas to frame the given tokens (read-only camera move; no store, no auto-restore).
+function panToTokens(toks, duration = 480) {
   try {
-    if (!canvas?.ready || !(ids || []).length) return;
-    const toks = [], seen = new Set();
-    for (const id of new Set(ids)) {
-      const byTok = canvas.tokens?.get?.(id);
-      if (byTok?.actor) { if (!seen.has(byTok.id)) { seen.add(byTok.id); toks.push(byTok); } continue; }
-      for (const t of (canvas.tokens?.placeables || [])) { if (t.actor?.id === id && !seen.has(t.id)) { seen.add(t.id); toks.push(t); } }
-    }
-    if (!toks.length) return;
+    if (!canvas?.ready || !(toks || []).length) return;
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
     for (const t of toks) { const c = t.center, r = Math.max(t.w, t.h) * 0.5; minX = Math.min(minX, c.x - r); maxX = Math.max(maxX, c.x + r); minY = Math.min(minY, c.y - r); maxY = Math.max(maxY, c.y + r); }
     const cx = (minX + maxX) / 2, cy = (minY + maxY) / 2;
     const bw = Math.max(1, maxX - minX), bh = Math.max(1, maxY - minY);
     const pad = 2.6;
     const scale = Math.max(0.25, Math.min(1.7, Math.min(window.innerWidth / (bw * pad), window.innerHeight / (bh * pad))));
-    if (!_preImpactView) _preImpactView = { x: canvas.stage.pivot.x, y: canvas.stage.pivot.y, scale: canvas.stage.scale.x };
-    canvas.animatePan({ x: cx, y: cy, scale, duration: 480 });
+    canvas.animatePan({ x: cx, y: cy, scale, duration });
+  } catch (e) {}
+}
+function storePreImpactView() { try { if (canvas?.ready && !_preImpactView) _preImpactView = { x: canvas.stage.pivot.x, y: canvas.stage.pivot.y, scale: canvas.stage.scale.x }; } catch (e) {} }
+function clearPreImpactView() { _preImpactView = null; }
+// Single-shot impact pan (the ATTACK roll-time impact): zoom to the targets, auto-restore the prior view shortly after.
+function panToImpactByActors(ids) {
+  try {
+    const toks = resolveTokens(ids); if (!toks.length) return;
+    storePreImpactView();
+    panToTokens(toks);
     clearTimeout(_restoreTimer);
     _restoreTimer = setTimeout(() => { try { if (_preImpactView) { canvas.animatePan({ ..._preImpactView, duration: 620 }); _preImpactView = null; } } catch (e) {} }, Math.max(1400, cineMs()));
   } catch (e) {}
@@ -1090,7 +1144,8 @@ async function renderStinger(p) {
       const lab = `<div class="ddbx-rsub">${labTxt}</div>`;
       wrap.innerHTML = `<div class="ddbx-vig${isHit ? ' hit' : ''}"></div>${tex}${isHit ? `<div class="ddbx-flash"></div>${damageFx(dmgType)}` : frame}<div class="ddbx-impact-att">${att}</div>${focus}<div class="ddbx-impact-readout">${num}${lab}</div>`;
       if (isHit) { try { shakeScreen(p.heal ? 'soft' : ((p.total ?? 0) >= 25 ? 'hard' : 'med')); } catch (e) {} }
-      try { panToImpactByActors(p.applyIds); } catch (e) {}
+      // noPan: a conducted apply sequence owns the camera (zoom → pan target-to-target → zoom out); don't let the overlay also pan.
+      if (!p.noPan) { try { panToImpactByActors(p.applyIds); } catch (e) {} }
     } else {
       // Action-art sub-circle riding the roller portrait (only for real action art, never the check d20/crest placeholder).
       const actionBadge = (p.img && !p.crest) ? `<span class="ddbx-actbadge" style="background-image:url('${cleanUrl(p.img)}')"></span>` : '';
@@ -1453,7 +1508,7 @@ Hooks.once('ready', () => {
       else if (m?.t === 'groupclear') clearGroupLocal();
     });
   } catch (e) {}
-  if (!game.user.isGM) { console.log('DDB Integrator | ready (v0.1.8)'); return; }
+  if (!game.user.isGM) { console.log('DDB Integrator | ready (v0.1.9)'); return; }
   window.DDBIntegrator = { reconnect, startOwnSocket, editMapping, editCookie, editSounds, fetchCampaignCharacters, startGroup, finalizeGroup, cancelGroup };
   // Replace/suppress Foundry's native dnd5e roll cards — this module posts its own. ONLY native ROLL cards are
   // touched (no item/usage interception, no automation): a GM roll renders our card too, then we keep the native
@@ -1504,5 +1559,5 @@ Hooks.once('ready', () => {
   // Insurance: force one scene-controls re-render now that everything is wired, in case the controls had already
   // painted. The top-level getSceneControlButtons hook is what makes the tools appear; this just guarantees a paint.
   try { ui.controls?.render?.(true); } catch (e) {}
-  console.log('DDB Integrator | ready (v0.1.8)');
+  console.log('DDB Integrator | ready (v0.1.9)');
 });

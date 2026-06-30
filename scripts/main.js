@@ -61,6 +61,7 @@ const STYLES = `
 .ddbx2-pc-pill.crit{background:rgba(105,215,127,.2);color:var(--good);box-shadow:inset 0 0 0 1px rgba(105,215,127,.5);}
 .ddbx2-pc-pill.fumble{background:rgba(255,107,107,.2);color:var(--bad);box-shadow:inset 0 0 0 1px rgba(255,107,107,.5);}
 .ddbx2-pc-pill.dtype{background:rgba(224,130,77,.2);color:var(--coral-text);box-shadow:inset 0 0 0 1px rgba(224,130,77,.45);text-transform:capitalize;}
+.ddbx2-pc-pill.applied{background:rgba(255,180,60,.22);color:#ffce6a;box-shadow:inset 0 0 0 1px rgba(255,180,60,.5);}
 /* --- Cinematic stinger (orbit layout, result/declare only) --- */
 .ddbx-sting{position:fixed;inset:0;z-index:auto;pointer-events:none;overflow:hidden;font-family:'Modesto Condensed','Signika',serif;--ddbx-portbg:radial-gradient(circle at 50% 34%,#41435a,#15151d);}
 @keyframes ddbx-st-fade{0%{opacity:0;}6%{opacity:1;}85%{opacity:1;}100%{opacity:0;}}
@@ -345,6 +346,7 @@ function publicCard(c) {
   if (nat === 20) pills.push(`<span class="ddbx2-pc-pill crit"><i class="fas fa-star"></i> Natural 20</span>`);
   else if (nat === 1) pills.push(`<span class="ddbx2-pc-pill fumble"><i class="fas fa-skull"></i> Natural 1</span>`);
   if (c.kind === 'damage' && !c.heal) for (const t of (c.damageTypes || [])) pills.push(`<span class="ddbx2-pc-pill dtype">${esc(t)}</span>`);
+  if (c.appliedMult) pills.push(`<span class="ddbx2-pc-pill applied"><i class="fas fa-burst"></i> ×${esc(c.appliedMult)} applied</span>`);
   const pillRow = pills.length ? `<div class="ddbx2-pc-pills">${pills.join('')}</div>` : '';
   // Hero number + kind label.
   const kindRow = `<div class="ddbx2-pc-kind"><i class="fas ${m.ic}"></i> ${esc(m.label)}</div>`;
@@ -353,7 +355,11 @@ function publicCard(c) {
   const sub = c.formula ? `<div class="ddbx2-pc-sub">${esc(c.formula)}</div>` : '';
   return `<div class="ddbx2-pc" style="--accent:${accent}">${wm}<div class="ddbx2-pc-body">${title}${kindRow}${hero}${pillRow}${sub}${target}</div></div>`;
 }
-async function postPublic(c) { return ChatMessage.create({ speaker: speakerFor(c), content: publicCard(c), flags: { [NS]: { card: true } } }); }
+async function postPublic(c) {
+  const flags = { [NS]: { card: true } };
+  if (c.kind === 'damage') flags[NS].cardData = c;   // kept so we can update the displayed total when the GM applies the damage
+  return ChatMessage.create({ speaker: speakerFor(c), content: publicCard(c), flags });
+}
 
 // Present ONE roll: post the public card, animate the DDB dice, fire the cinematic + sound.
 async function present(p) {
@@ -368,9 +374,10 @@ async function present(p) {
       img: p.img || '', actorImg: actor?.img || '', formula: p.formula || '',
       target: targets[0] || null, targets,   // PRESENTATION ONLY — first frames the impact cinematic; the card lists all.
     };
-    await postPublic(card);   // the unified chat card ALWAYS posts (keeps the chat log), session live or not
+    const styled = await postPublic(card);   // the unified chat card ALWAYS posts (keeps the chat log), session live or not
     // D&D Beyond DAMAGE rolls have no native dnd5e card, so synthesize one (with the system's Apply tray) for the GM.
-    if (p.ddb) { try { synthDamageCard(card); synthAttackCard(card); } catch (e) {} }
+    // The stylized card's id rides on the damage card so the apply hook can update its displayed total to the applied amount.
+    if (p.ddb) { try { synthDamageCard(card, styled?.id); synthAttackCard(card); } catch (e) {} }
     // Initiative: the FIRST init roll auto-opens an Initiative gather; the rest fold in; each value is written to the
     // combat tracker. Only when nothing else is running (or an Initiative gather already is) — a manual Group Check /
     // Contest is never hijacked. The GM ends the gather with the ✕ on the cinematic.
@@ -392,7 +399,8 @@ async function present(p) {
       });
       return;
     }
-    dsnRoll(p.dice);
+    // Skip our DDB-dice animation for a DDB ATTACK roll — the native attack card already animates the d20 (no double).
+    if (!(p.ddb && card.kind === 'attack' && game.settings.get(NS, 'ddbApplyCard'))) dsnRoll(p.dice);
     announce(card);
   } catch (e) { console.warn('DDB Integrator | present', e); }
 }
@@ -418,7 +426,7 @@ function setInitiative(actor, value) {
 // (multipliers, resistance, temp HP). Uses dnd5e's OWN activity-less damage path (the same one its [[/damage]] enricher
 // uses): a constant `parts:["<total>"]` evaluates to the exact DDB total (no re-roll), and the Apply tray renders from
 // the DamageRoll instance + GM — no real item/activity required. Posted publicly; only the GM can apply; never automatic.
-async function synthDamageCard(card) {
+async function synthDamageCard(card, stylizedId) {
   try {
     if (!game.user?.isGM) return;
     if (card.kind !== 'damage' || card.heal) return;
@@ -426,11 +434,13 @@ async function synthDamageCard(card) {
     const DamageRoll = CONFIG.Dice?.DamageRoll; if (!DamageRoll?.build) { console.warn('DDB Integrator | no DamageRoll.build'); return; }
     const dtype = card.damageType || (card.damageTypes && card.damageTypes[0]) || '';
     const total = Math.max(0, Math.round(Number(card.total) || 0));
+    const flags = synthFlags(card, 'damage');
+    if (stylizedId) flags[NS].stylizedId = stylizedId;   // so the apply hook can update the stylized card's total
     console.log('[ddbx-synth] damage card', { total, dtype });
     await DamageRoll.build(
       { rolls: [{ parts: [String(total)], options: { type: dtype, types: dtype ? [dtype] : [], properties: [] } }], hookNames: ['damage'] },
       { configure: false },
-      { create: true, data: { flavor: `${card.action || 'Damage'} — Damage Roll`, speaker: speakerFor(card), flags: synthFlags(card, 'damage'), whisper: nativeWhisper() } }
+      { create: true, data: { flavor: `${card.action || 'Damage'} — Damage Roll`, speaker: speakerFor(card), flags, whisper: nativeWhisper() } }
     );
   } catch (e) { console.warn('DDB Integrator | synthDamageCard', e); }
 }
@@ -821,7 +831,18 @@ function onDamageApplied(actor, amount, options) {
     };
     playStinger(payload);
     try { game.socket?.emit(`module.${NS}`, { t: 'stinger', payload }); } catch (e) {}
+    // Update the public stylized card's total to the applied amount (e.g. ×2), so it matches the cinematic + the real damage dealt.
+    const sid = options?.originatingMessage?.flags?.[NS]?.stylizedId;
+    if (sid) updateStylizedDamage(sid, amt, options?.multiplier);
   } catch (e) { console.warn('DDB Integrator | onDamageApplied', e); }
+}
+// Re-render the stylized damage card with the APPLIED total (and the multiplier as a pill). Stored cardData lets us rebuild it.
+async function updateStylizedDamage(msgId, applied, multiplier) {
+  try {
+    const msg = game.messages?.get?.(msgId); const c = msg?.flags?.[NS]?.cardData; if (!c) return;
+    const mult = (Number(multiplier) && Number(multiplier) !== 1) ? Number(multiplier) : null;
+    await msg.update({ content: publicCard({ ...c, total: Math.round(applied), appliedMult: mult }) });
+  } catch (e) { console.warn('DDB Integrator | updateStylizedDamage', e); }
 }
 Hooks.on('dnd5e.applyDamage', onDamageApplied);   // fire the damage impact when the GM applies damage (post-multiplier)
 // Damage-type → a full-screen effect wash for the impact cinematic.
@@ -1432,7 +1453,7 @@ Hooks.once('ready', () => {
       else if (m?.t === 'groupclear') clearGroupLocal();
     });
   } catch (e) {}
-  if (!game.user.isGM) { console.log('DDB Integrator | ready (v0.1.7)'); return; }
+  if (!game.user.isGM) { console.log('DDB Integrator | ready (v0.1.8)'); return; }
   window.DDBIntegrator = { reconnect, startOwnSocket, editMapping, editCookie, editSounds, fetchCampaignCharacters, startGroup, finalizeGroup, cancelGroup };
   // Replace/suppress Foundry's native dnd5e roll cards — this module posts its own. ONLY native ROLL cards are
   // touched (no item/usage interception, no automation): a GM roll renders our card too, then we keep the native
@@ -1483,5 +1504,5 @@ Hooks.once('ready', () => {
   // Insurance: force one scene-controls re-render now that everything is wired, in case the controls had already
   // painted. The top-level getSceneControlButtons hook is what makes the tools appear; this just guarantees a paint.
   try { ui.controls?.render?.(true); } catch (e) {}
-  console.log('DDB Integrator | ready (v0.1.7)');
+  console.log('DDB Integrator | ready (v0.1.8)');
 });

@@ -1026,8 +1026,8 @@ async function flushApplyBuffer() {
   const base = cineMs();
   try {
     for (const g of groups) {
-      if (g.token) panToTokens([g.token]);   // zoom to this target ONCE — it stays zoomed for all its damage types
-      await delay(300);                       // brief beat so the zoom centres before the first flash
+      if (g.token) await panToTokens([g.token], 340);   // AWAIT the pan so the camera fully RESTS before the overlay (no mid-pan doubling)
+      await delay(130);                                  // let it settle a beat, then reveal the portrait
       const multi = g.flashes.length > 1;
       const fdur = multi ? Math.max(430, Math.round(base * 0.28)) : Math.max(600, Math.round(base * 0.46));   // faster: a fraction of the duration setting
       for (const f of g.flashes) { castImpact(g.actor, g.token, f.type, f.value, fdur); await delay(fdur + 320); }
@@ -1186,7 +1186,10 @@ function panToTokens(toks, duration = 480) {
     const bw = Math.max(1, maxX - minX), bh = Math.max(1, maxY - minY);
     const pad = 2.6;
     const scale = Math.max(0.25, Math.min(1.7, Math.min(window.innerWidth / (bw * pad), window.innerHeight / (bh * pad))));
-    canvas.animatePan({ x: cx, y: cy, scale, duration });
+    // Return the animation promise so callers can AWAIT the pan settling before revealing an overlay (.catch so an
+    // interrupted pan never rejects the await).
+    const pr = canvas.animatePan({ x: cx, y: cy, scale, duration });
+    return (pr && pr.catch) ? pr.catch(() => {}) : pr;
   } catch (e) {}
 }
 function storePreImpactView() { try { if (canvas?.ready && !_preImpactView) _preImpactView = { x: canvas.stage.pivot.x, y: canvas.stage.pivot.y, scale: canvas.stage.scale.x }; } catch (e) {} }
@@ -1687,7 +1690,7 @@ Hooks.once('ready', () => {
       else if (m?.t === 'groupclear') clearGroupLocal();
     });
   } catch (e) {}
-  if (!game.user.isGM) { console.log('DDB Integrator | ready (v0.2.1)'); return; }
+  if (!game.user.isGM) { console.log('DDB Integrator | ready (v0.2.2)'); return; }
   window.DDBIntegrator = { reconnect, startOwnSocket, editMapping, editCookie, editSounds, fetchCampaignCharacters, startGroup, finalizeGroup, cancelGroup };
   // Replace/suppress Foundry's native dnd5e roll cards — this module posts its own. ONLY native ROLL cards are
   // touched (no item/usage interception, no automation): a GM roll renders our card too, then we keep the native
@@ -1738,5 +1741,5 @@ Hooks.once('ready', () => {
   // Insurance: force one scene-controls re-render now that everything is wired, in case the controls had already
   // painted. The top-level getSceneControlButtons hook is what makes the tools appear; this just guarantees a paint.
   try { ui.controls?.render?.(true); } catch (e) {}
-  console.log('DDB Integrator | ready (v0.2.1)');
+  console.log('DDB Integrator | ready (v0.2.2)');
 });

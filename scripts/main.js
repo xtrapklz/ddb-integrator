@@ -893,18 +893,23 @@ async function flushApplyBuffer() {
   let visuals = true; try { visuals = game.settings.get(NS, 'cinematics'); } catch (e) {}
   if (!visuals) { for (const it of items) castApplyOverlay(it); return; }   // visuals off → just the cues, no camera work
   _applyRunning = true;
+  // Capture the TRUE original view ONCE, LOCALLY. If an attack roll just zoomed in, its stored pre-attack view IS the
+  // original; otherwise the current view is. Then cancel that attack impact's pending restore timer — left armed, it would
+  // fire mid-sequence, yank the camera, AND null the shared view out from under our final zoom-out (the bug being fixed).
+  let origin = _preImpactView ? { ..._preImpactView } : null;
+  if (!origin) { try { if (canvas?.ready) origin = { x: canvas.stage.pivot.x, y: canvas.stage.pivot.y, scale: canvas.stage.scale.x }; } catch (e) {} }
+  try { clearTimeout(_restoreTimer); } catch (e) {}
+  _preImpactView = null;   // the batch owns the camera now
   try {
-    storePreImpactView();
     for (const it of items) {
       if (it.token) panToTokens([it.token]);   // zoom to this target (stay zoomed through the whole sequence)
       await delay(520);                        // let the zoom centre BEFORE the overlay (the requested half-second)
       castApplyOverlay(it);
       await delay(cineMs() + 200);             // hold the overlay, then move on to the next target
     }
-    // Zoom back OUT to the pre-impact scale, re-centred on the triggering actor (or restore the original view if no token).
-    const back = _preImpactView ? { ..._preImpactView } : null;
-    if (attacker) { try { const c = attacker.center; canvas.animatePan({ x: c.x, y: c.y, scale: back?.scale ?? canvas.stage.scale.x, duration: 680 }); } catch (e) {} }
-    else if (back) { try { canvas.animatePan({ ...back, duration: 680 }); } catch (e) {} }
+    // Zoom back OUT to the original scale, re-centred on the triggering actor (or restore the original view if no token).
+    if (attacker && origin) { try { const c = attacker.center; canvas.animatePan({ x: c.x, y: c.y, scale: origin.scale, duration: 680 }); } catch (e) {} }
+    else if (origin) { try { canvas.animatePan({ ...origin, duration: 680 }); } catch (e) {} }
   } finally { clearPreImpactView(); _applyRunning = false; if (_applyBuf.length) _applyTimer = setTimeout(flushApplyBuffer, 80); }
 }
 // Re-render the stylized damage card with the APPLIED total (and the multiplier as a pill). Stored cardData lets us rebuild it.
@@ -1557,7 +1562,7 @@ Hooks.once('ready', () => {
       else if (m?.t === 'groupclear') clearGroupLocal();
     });
   } catch (e) {}
-  if (!game.user.isGM) { console.log('DDB Integrator | ready (v0.1.11)'); return; }
+  if (!game.user.isGM) { console.log('DDB Integrator | ready (v0.1.12)'); return; }
   window.DDBIntegrator = { reconnect, startOwnSocket, editMapping, editCookie, editSounds, fetchCampaignCharacters, startGroup, finalizeGroup, cancelGroup };
   // Replace/suppress Foundry's native dnd5e roll cards — this module posts its own. ONLY native ROLL cards are
   // touched (no item/usage interception, no automation): a GM roll renders our card too, then we keep the native
@@ -1608,5 +1613,5 @@ Hooks.once('ready', () => {
   // Insurance: force one scene-controls re-render now that everything is wired, in case the controls had already
   // painted. The top-level getSceneControlButtons hook is what makes the tools appear; this just guarantees a paint.
   try { ui.controls?.render?.(true); } catch (e) {}
-  console.log('DDB Integrator | ready (v0.1.11)');
+  console.log('DDB Integrator | ready (v0.1.12)');
 });

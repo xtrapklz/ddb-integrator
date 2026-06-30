@@ -1324,7 +1324,7 @@ Hooks.once('init', () => {
   game.settings.register(NS, 'characterMapping', { scope: 'world', config: false, type: Object, default: {} });
   // ─── Cards ───
   game.settings.register(NS, 'suppressNative', { name: 'Hide native dnd5e roll cards', hint: "Suppress Foundry's own roll cards for everyone — this module posts its own unified card instead. Turn off to keep the native cards too.", scope: 'world', config: true, type: Boolean, default: true });
-  game.settings.register(NS, 'nativeForGM', { name: 'Keep native cards for the GM', hint: 'When YOU roll inside Foundry, keep the native dnd5e card but whisper it to the GM only (so you can use its buttons). Players still see this module’s unified card + cinematic. You’ll see both.', scope: 'world', config: true, type: Boolean, default: false });
+  game.settings.register(NS, 'nativeForGM', { name: 'Keep native cards for the GM', hint: 'When YOU roll inside Foundry, keep the native dnd5e card but whisper it to the GM only (so you can use its buttons). Players still see this module’s unified card + cinematic. You’ll see both.', scope: 'world', config: true, type: Boolean, default: true });
   game.settings.register(NS, 'ddbApplyCard', { name: 'Apply card for D&D Beyond damage', hint: 'D&D Beyond DAMAGE rolls have no native card of their own. When on, also post the system’s native damage card — with its Apply tray (½/×2 multipliers, resistance, temp HP) — whispered to the GM, so you can apply D&D Beyond damage just like a local roll. Your stylized card still posts for everyone. Applying is always a click; nothing is automatic.', scope: 'world', config: true, type: Boolean, default: true });
   // ─── Cinematics ───
   game.settings.register(NS, 'cinematics', { name: 'Cinematic roll reveals', hint: 'Show a brief full-screen flourish when a roll lands — the roller portrait, the total, and the kind, with gold flair for a natural 20 and red for a natural 1. Shown to all players.', scope: 'world', config: true, type: Boolean, default: true });
@@ -1371,7 +1371,7 @@ Hooks.once('ready', () => {
       else if (m?.t === 'groupclear') clearGroupLocal();
     });
   } catch (e) {}
-  if (!game.user.isGM) { console.log('DDB Integrator | ready (v0.1.2)'); return; }
+  if (!game.user.isGM) { console.log('DDB Integrator | ready (v0.1.3)'); return; }
   window.DDBIntegrator = { reconnect, startOwnSocket, editMapping, editCookie, editSounds, fetchCampaignCharacters, startGroup, finalizeGroup, cancelGroup };
   // Replace/suppress Foundry's native dnd5e roll cards — this module posts its own. ONLY native ROLL cards are
   // touched (no item/usage interception, no automation): a GM roll renders our card too, then we keep the native
@@ -1425,5 +1425,5 @@ Hooks.once('ready', () => {
   // Insurance: force one scene-controls re-render now that everything is wired, in case the controls had already
   // painted. The top-level getSceneControlButtons hook is what makes the tools appear; this just guarantees a paint.
   try { ui.controls?.render?.(true); } catch (e) {}
-  console.log('DDB Integrator | ready (v0.1.2)');
+  console.log('DDB Integrator | ready (v0.1.3)');
 });

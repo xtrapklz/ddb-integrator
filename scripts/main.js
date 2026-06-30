@@ -434,9 +434,17 @@ async function synthDamageCard(card) {
     );
   } catch (e) { console.warn('DDB Integrator | synthDamageCard', e); }
 }
-// For a D&D Beyond ATTACK roll, post the native attack card (the d20 total vs each target's AC → hit/miss). A constant
-// D20Roll carries the exact DDB total; the hit/miss comes from options.target (the AC) + the 'attack' roll flag. (The
-// crit/fumble highlight needs the real d20 face, which the stylized card already shows, so we keep this simple.)
+// The kept d20 face from a DDB roll (total minus the flat modifier and any non-d20 dice) — to force the synth attack die.
+function ddbD20Face(roll) {
+  try {
+    const dd = ddbDice(roll); if (!dd || !(dd.sets || []).some(s => s.faces === 20)) return null;
+    const other = (dd.sets || []).filter(s => s.faces !== 20).reduce((a, s) => a + (s.values || []).reduce((x, v) => x + (Number(v) || 0), 0), 0);
+    return Number(roll.result?.total ?? 0) - (dd.mod || 0) - other;
+  } catch (e) { return null; }
+}
+// For a D&D Beyond ATTACK roll, post the native attack card (d20 total vs each target's AC → hit/miss). dnd5e's attack-card
+// render reads roll.d20, whose getter requires terms[0] to be a real Die — a constant crashes it. So we build "1d20 + mod",
+// roll it, then force the d20 face (to the DDB result) and the total to the exact DDB total. Hit/miss = total vs AC.
 async function synthAttackCard(card) {
   try {
     if (!game.user?.isGM) return;
@@ -445,9 +453,14 @@ async function synthAttackCard(card) {
     const D20Roll = CONFIG.Dice?.D20Roll; if (!D20Roll?.toMessage) { console.warn('DDB Integrator | no D20Roll.toMessage'); return; }
     const total = Math.round(Number(card.total) || 0);
     const ac = buildNativeTargets(card.targets).find(t => t.ac != null)?.ac ?? null;
-    console.log('[ddbx-synth] attack card', { total, ac });
-    const roll = new D20Roll(String(total), {}, { target: ac == null ? undefined : ac, criticalSuccess: 20, criticalFailure: 1, rollType: 'attack' });
+    // The d20 face: the real DDB face if we have it, else 20/1 for a known crit/fumble, else a neutral 10 (the total is forced).
+    const face = Number.isFinite(card.d20) ? card.d20 : (card.nat === 20 ? 20 : card.nat === 1 ? 1 : 10);
+    const mod = total - face;
+    console.log('[ddbx-synth] attack card', { total, ac, face, mod });
+    const roll = new D20Roll(`1d20 ${mod < 0 ? '-' : '+'} ${Math.abs(mod)}`, {}, { target: ac == null ? undefined : ac, criticalSuccess: 20, criticalFailure: 1, advantageMode: 0, rollType: 'attack' });
     await roll.evaluate();
+    // Force the d20 to the DDB face (accessing roll.d20 upgrades terms[0] to a D20Die first) and pin the displayed total.
+    try { const die = roll.d20; if (die?.results?.length) { die.results[0].result = face; die.results[0].active = true; delete die.results[0].discarded; } roll._total = total; } catch (e) {}
     await D20Roll.toMessage([roll], { flavor: `${card.action || 'Attack'} — Attack Roll`, speaker: speakerFor(card), flags: synthFlags(card, 'attack') }, { create: true });
   } catch (e) { console.warn('DDB Integrator | synthAttackCard', e); }
 }
@@ -505,7 +518,7 @@ async function renderRoll(data) {
   return present({
     who: rollerName, action: label, actorId: actor?.id || null,
     kind, heal: ctx.isHeal || rt === 'heal', ability: checkAb,
-    total: Number(roll.result?.total ?? 0), nat: natFace(roll),
+    total: Number(roll.result?.total ?? 0), nat: natFace(roll), d20: ddbD20Face(roll),
     damageType: ctx.damageType, damageTypes: ctx.damageTypes,
     dice: ddbDice(roll), advKind: roll.rollKind || '', formula: ddbFormula(roll), img, ddb: true,
   });
@@ -1390,7 +1403,7 @@ Hooks.once('ready', () => {
       else if (m?.t === 'groupclear') clearGroupLocal();
     });
   } catch (e) {}
-  if (!game.user.isGM) { console.log('DDB Integrator | ready (v0.1.5)'); return; }
+  if (!game.user.isGM) { console.log('DDB Integrator | ready (v0.1.6)'); return; }
   window.DDBIntegrator = { reconnect, startOwnSocket, editMapping, editCookie, editSounds, fetchCampaignCharacters, startGroup, finalizeGroup, cancelGroup };
   // Replace/suppress Foundry's native dnd5e roll cards — this module posts its own. ONLY native ROLL cards are
   // touched (no item/usage interception, no automation): a GM roll renders our card too, then we keep the native
@@ -1438,5 +1451,5 @@ Hooks.once('ready', () => {
   // Insurance: force one scene-controls re-render now that everything is wired, in case the controls had already
   // painted. The top-level getSceneControlButtons hook is what makes the tools appear; this just guarantees a paint.
   try { ui.controls?.render?.(true); } catch (e) {}
-  console.log('DDB Integrator | ready (v0.1.5)');
+  console.log('DDB Integrator | ready (v0.1.6)');
 });

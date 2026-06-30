@@ -69,6 +69,9 @@ const STYLES = `
    simply persists until the GM finalizes or cancels. (Belt: is-gathering also pins opacity if a fade ever leaks in.) */
 .ddbx-st-fade{animation:ddbx-st-fade var(--dur,3500ms) ease forwards;}
 .ddbx-group.is-gathering{animation:none!important;opacity:1!important;}
+/* GM-only close control. The cinematic root is pointer-events:none, so this button re-enables pointer events on itself. */
+.ddbx-close{position:absolute;top:max(14px,3vh);right:max(18px,2vw);width:38px;height:38px;border-radius:50%;background:rgba(0,0,0,.55);border:1.6px solid rgba(255,255,255,.45);color:#fff;font:700 18px/35px system-ui,Arial,sans-serif;text-align:center;cursor:pointer;pointer-events:auto;z-index:30;transition:background .15s,border-color .15s,transform .12s;}
+.ddbx-close:hover{background:rgba(0,0,0,.85);border-color:#fff;transform:scale(1.08);}
 .ddbx-critflash{position:absolute;inset:0;pointer-events:none;background:radial-gradient(circle at 50% 45%, color-mix(in srgb,var(--c1) 65%,transparent), transparent 62%);opacity:0;animation:ddbx-critflash 1.1s ease-out;}
 @keyframes ddbx-critflash{0%{opacity:0;}12%{opacity:1;}40%{opacity:.25;}60%{opacity:.7;}100%{opacity:0;}}
 .ddbx-sting.crit.critwin .ddbx-result{text-shadow:0 0 30px var(--gold);}
@@ -228,12 +231,12 @@ function sanitizeGroup(p) {
   if (!p || typeof p !== 'object') return null;
   const num = v => { const n = Number(v); return Number.isFinite(n) ? n : null; };
   const str = (v, n = 120) => (v == null ? '' : String(v).slice(0, n));
-  const mode = p.mode === 'contest' ? 'contest' : 'check';
+  const mode = p.mode === 'contest' ? 'contest' : (p.mode === 'init' ? 'init' : 'check');
   // Phases: 'gathering' (collecting rolls) or 'result' (finalized). Both presentation-only.
   const phase = p.phase === 'result' ? 'result' : 'gathering';
   const entries = Array.isArray(p.entries) ? p.entries.slice(0, 24).map(e => ({
     who: str(e?.who, 80), img: cleanUrl(e?.img), actionImg: cleanUrl(e?.actionImg),
-    label: str(e?.label, 60), total: num(e?.total), sub: str(e?.sub, 40), win: e?.win === true,
+    label: str(e?.label, 60), total: num(e?.total), sub: str(e?.sub, 40), win: e?.win === true ? true : (e?.win === false ? false : null),
   })) : [];
   return { mode, phase, headline: str(p.headline, 80), entries };
 }
@@ -325,8 +328,9 @@ function publicCard(c) {
     : `<div class="ddbx2-pc-wm" style="background-color:${tint};-webkit-mask:url('${WM_IMG}') center/62% no-repeat;mask:url('${WM_IMG}') center/62% no-repeat;"></div>`;
   // Target reticule: Foundry's own message header already shows the ROLLER's portrait + name, so we don't repeat it.
   // Instead, when a target was selected as the roll landed, show WHO is being hit, framed in a crosshair reticule.
-  const target = (c.targetImg || c.targetName)
-    ? `<div class="ddbx2-pc-target"><i class="fas fa-crosshairs ddbx2-pc-tcross"></i>${c.targetImg ? `<span class="ddbx2-pc-reticule"><img src="${cleanUrl(c.targetImg)}" onerror="this.style.display='none'"></span>` : ''}${c.targetName ? `<span class="ddbx2-pc-tname">${esc(c.targetName)}</span>` : ''}</div>`
+  const tgt = c.target || {};
+  const target = (tgt.img || tgt.name)
+    ? `<div class="ddbx2-pc-target"><i class="fas fa-crosshairs ddbx2-pc-tcross"></i>${tgt.img ? `<span class="ddbx2-pc-reticule"><img src="${cleanUrl(tgt.img)}" onerror="this.style.display='none'"></span>` : ''}${tgt.name ? `<span class="ddbx2-pc-tname">${esc(tgt.name)}</span>` : ''}</div>`
     : '';
   // Title: the action/item name (initiative/death saves carry no item, so use the kind label there).
   const titleTxt = (c.kind === 'init' || c.kind === 'death') ? m.label : (c.action || m.label);
@@ -360,6 +364,15 @@ async function present(p) {
       target: captureTarget(),   // PRESENTATION ONLY — the GM's selected token, used solely to frame the impact reveal.
     };
     await postPublic(card);   // the unified chat card ALWAYS posts (keeps the chat log), session live or not
+    // Initiative: the FIRST init roll auto-opens an Initiative gather; the rest fold in; each value is written to the
+    // combat tracker. Only when nothing else is running (or an Initiative gather already is) — a manual Group Check /
+    // Contest is never hijacked. The GM ends the gather with the ✕ on the cinematic.
+    if (card.kind === 'init' && game.user?.isGM && (!GroupRoll.active || GroupRoll.mode === 'init')) {
+      if (!GroupRoll.active) startGroup('init');
+      setInitiative(actor, card.total);
+      ingestGroupRoll({ who: card.who, actorId: actor?.id || null, actorImg: card.actorImg, actionImg: '', isAction: false, label: 'Initiative', kind: 'init', total: card.total, nat: card.nat });
+      return;
+    }
     // While a Group Check / Contest session is live, fold this roll into the group cinematic instead of firing the
     // individual roll-reveal flourish (the chat card above is unaffected). An action/item roll (attack/damage) carries
     // its art; a bare ability/skill/save check does not.
@@ -383,6 +396,15 @@ function captureTarget() {
     if (!t) return null;
     return { id: t.id || null, name: t.name || t.actor?.name || '', img: t.document?.texture?.src || t.actor?.img || '' };
   } catch (e) { return null; }
+}
+// Write a rolled initiative value onto the actor's combatant(s) in the active combat. GM only; no-op without a combat
+// or a matching combatant. This is the ONLY place the module writes Foundry state — and only the initiative field.
+function setInitiative(actor, value) {
+  try {
+    if (!game.user?.isGM || !actor || !game.combat || value == null) return;
+    const combs = game.combat.combatants.filter(c => (c.actorId || c.actor?.id) === actor.id);
+    for (const c of combs) { try { game.combat.setInitiative(c.id, Number(value)); } catch (e) {} }
+  } catch (e) { console.warn('DDB Integrator | setInitiative', e); }
 }
 
 /* --------------------------------------------------------------- receive: D&D Beyond rolls */
@@ -876,6 +898,8 @@ function fitCinematic(wrap) {
 // Cinematics are SERIALIZED through a queue so a new one can never render on top of one already on screen.
 let _stQ = [], _stBusy = false;
 function playStinger(p) { try { if (!p) return; if (GroupRoll.active && game.user?.isGM) return; _stQ.push(p); pumpStingers(); } catch (e) {} }
+// Single-roll cinematic on-screen time (ms), from the GM-set "Cinematic duration" setting. Clamped to a sane floor.
+function cineMs() { try { return Math.max(800, Math.round((Number(game.settings.get(NS, 'cinematicDuration')) || 3.5) * 1000)); } catch (e) { return 3500; } }
 function pumpStingers() {
   // Hard stop: while a Group Check / Contest is live, that cinematic owns the screen — never pump a single-roll one.
   if (GroupRoll.active && game.user?.isGM) { _stQ.length = 0; _stBusy = false; return; }
@@ -883,7 +907,7 @@ function pumpStingers() {
   const p = _stQ.shift(); _stBusy = true;
   try { renderStinger(p); } catch (e) { console.warn('DDB Integrator | stinger', e); }
   let visuals = true; try { visuals = game.settings.get(NS, 'cinematics'); } catch (e) {}
-  const occ = !visuals ? 0 : (p.phase === 'impact' ? 3400 : 3200);
+  const occ = !visuals ? 0 : (cineMs() + (p.phase === 'impact' ? 200 : 0));
   setTimeout(() => { _stBusy = false; pumpStingers(); }, occ + 300);
 }
 // Roll-reveal flourish (roller portrait + roll total + kind, gold for a nat 20, red for a nat 1), OR — for a damage
@@ -900,7 +924,7 @@ async function renderStinger(p) {
     const layout = 'orbit';
     const impact = p.phase === 'impact';
     const crit = p.tone === 'crit' || p.tone === 'critmiss';
-    const dur = impact ? 3400 : 3200;
+    const dur = cineMs() + (impact ? 200 : 0);
     // Colour: an impact themes off its damage type (gold-ish heal); else gold for a crit, red for a crit-fail, then art hue.
     let H;
     if (impact) H = p.heal ? 140 : (damageHue(p.dtype) ?? 0);
@@ -942,6 +966,8 @@ async function renderStinger(p) {
       const center = `<div class="ddbx-center"><div class="ddbx-burst"></div><div class="ddbx-result">${esc(p.word ?? p.total ?? '')}</div>${rsub ? `<div class="ddbx-rsub">${rsub}</div>` : ''}</div>`;
       wrap.innerHTML = `${p.crest ? crestBg : bgEl}<div class="ddbx-vig"></div>${tex}${critFx}${frame}<div class="ddbx-pts">${particles}</div><div class="ddbx-stage">${caster}${center}</div>`;
     }
+    // GM-only ✕ to dismiss this reveal early (the cinematic root is click-through; the button re-enables its own clicks).
+    if (game.user?.isGM) wrap.insertAdjacentHTML('beforeend', '<div class="ddbx-close" title="Dismiss">✕</div>');
     // Render just ABOVE the canvas but BELOW the UI: insert right after #board so the map is covered dramatically
     // while chat/toolbar stay on top and interactive.
     const board = document.getElementById('board');
@@ -1017,7 +1043,7 @@ function refreshGroupControls() { try { ui.controls?.render?.(true); } catch (e)
 function groupPayload(phase, headline) {
   const entries = Array.from(GroupRoll.entries.values()).map(e => ({
     who: e.who || '', img: e.actorImg || '', actionImg: e.actionImg || '',
-    label: e.label || '', total: (e.total == null ? null : e.total), sub: e.sub || '', win: !!e.win,
+    label: e.label || '', total: (e.total == null ? null : e.total), sub: e.sub || '', win: e.win ?? null,
   }));
   return { mode: GroupRoll.mode || 'check', phase, headline: headline || '', entries };
 }
@@ -1041,8 +1067,9 @@ function groupTile(e) {
 }
 // Header for the group cinematic: title + a "gathering rolls…" line, or the finalized result line.
 function groupHead(p) {
-  const title = p.mode === 'contest' ? 'Contest' : 'Group Check';
+  const title = p.mode === 'contest' ? 'Contest' : p.mode === 'init' ? 'Initiative' : 'Group Check';
   if (p.phase === 'result') {
+    if (p.mode === 'init') return `<div class="ddbx-gh-title">${title}</div><div class="ddbx-gh-sub">turn order set</div>`;
     if (p.mode === 'contest') return `<div class="ddbx-gh-title">${title}</div><div class="ddbx-gh-sub">winner</div>${p.headline ? `<div class="ddbx-gh-result">${esc(p.headline)}</div>` : ''}`;
     return `<div class="ddbx-gh-title">${title}</div>${p.headline ? `<div class="ddbx-gh-result">${esc(p.headline)}</div>` : ''}<div class="ddbx-gh-sub">party average</div>`;
   }
@@ -1095,11 +1122,13 @@ function renderGroup(p) {
     // Theme: gold on a finalized result (a celebratory reveal), cool indigo while gathering.
     const H = p.phase === 'result' ? 45 : 265;
     wrap.style.setProperty('--c1', `hsl(${H} 78% 62%)`); wrap.style.setProperty('--c2', `hsl(${H} 80% 26%)`);
-    const dur = p.phase === 'result' ? 3600 : 0;
+    const dur = p.phase === 'result' ? (cineMs() + 200) : 0;
     if (dur) wrap.style.setProperty('--dur', dur + 'ms');
     let particles = ''; const N = p.phase === 'result' ? 44 : 24;
     for (let i = 0; i < N; i++) { const x = (Math.random() * 100).toFixed(1); const dl = (Math.random() * 1.8).toFixed(2); const du = (1.6 + Math.random() * 1.9).toFixed(2); const sz = (2 + Math.random() * 5).toFixed(1); const sway = Math.round(Math.random() * 50 - 25); const spark = i % 4 === 0 ? ' spark' : ''; particles += `<span class="ddbx-pt${spark}" style="left:${x}%;--sway:${sway}px;width:${sz}px;height:${sz}px;animation-delay:${dl}s;animation-duration:${du}s;"></span>`; }
     wrap.innerHTML = `<div class="ddbx-vig"></div><div class="ddbx-tex"></div><div class="ddbx-radial"></div><div class="ddbx-pts">${particles}</div><div class="ddbx-ghead">${groupHead(p)}</div><div class="ddbx-gtiles">${tilesHTML}</div>`;
+    // GM-only ✕ to reveal the result now (Group Check / Contest) or end the Initiative gather. Persists across in-place updates.
+    if (game.user?.isGM && p.phase !== 'result') wrap.insertAdjacentHTML('beforeend', '<div class="ddbx-close" title="Reveal / end">✕</div>');
     // While gathering, hold opacity steady (no auto-fade); the result phase uses the standard fade-out animation.
     if (p.phase !== 'result') wrap.style.animation = 'none';
     const board = document.getElementById('board');
@@ -1126,7 +1155,7 @@ function startGroup(mode) {
       if (now - (GroupRoll.startedAt || 0) < 1200) { refreshGroupControls(); return; }   // swallow a spurious double-fire
       finalizeGroup(); return;
     }
-    ui.notifications.warn(`DDB Integrator: a ${GroupRoll.mode === 'contest' ? 'Contest' : 'Group Check'} is already running — finish the current one first.`);
+    ui.notifications.warn(`DDB Integrator: a ${GroupRoll.mode === 'contest' ? 'Contest' : GroupRoll.mode === 'init' ? 'Initiative gather' : 'Group Check'} is already running — finish the current one first.`);
     return;
   }
   GroupRoll.active = true; GroupRoll.mode = mode; GroupRoll.entries.clear(); GroupRoll.startedAt = now;
@@ -1135,7 +1164,7 @@ function startGroup(mode) {
   clearTimeout(_groupFinalizeTimer); _groupFinalizeTimer = null;
   broadcastGroup('gathering');
   refreshGroupControls();
-  ui.notifications.info(`DDB Integrator: ${mode === 'contest' ? 'Contest' : 'Group Check'} started — rolls will gather. Click the tool again to finalize.`);
+  ui.notifications.info(`DDB Integrator: ${mode === 'contest' ? 'Contest' : mode === 'init' ? 'Initiative' : 'Group Check'} started — rolls will gather. ${mode === 'init' ? 'Click the ✕ on the cinematic to end.' : 'Click the tool again to finalize.'}`);
 }
 // GM: route a parsed roll into the live session (called from renderRoll / renderLocalMessage). Upserts the roller's
 // tile in place (re-rolls / skill-swaps UPDATE, never add a new tile). Returns nothing — the chat card still posts.
@@ -1155,7 +1184,7 @@ function ingestGroupRoll(info) {
       // Action art only for an action/item roll (not a bare ability/skill check).
       actionImg: (info.isAction ? (info.actionImg || '') : '') || prev.actionImg || '',
       label: info.label || prev.label || '',
-      total, sub, nat: info.nat ?? prev.nat ?? null, win: false,
+      total, sub, nat: info.nat ?? prev.nat ?? null, win: null,   // no winner/loser during gathering — set only at finalize
     });
     broadcastGroup('gathering');
   } catch (e) { console.warn('DDB Integrator | ingestGroupRoll', e); }
@@ -1171,6 +1200,8 @@ function finalizeGroup() {
     for (const [k, e] of GroupRoll.entries) { e.win = (max != null && e.total === max); GroupRoll.entries.set(k, e); }
     const winners = entries.filter(e => e.total === max).map(e => e.who);
     headline = winners.length ? winners.join(', ') : '—';
+  } else if (mode === 'init') {
+    headline = '';   // initiative: no average or winner — the rolled values are already on the combat tracker
   } else {
     // Group Check: AVERAGE of all totals, rounded UP.
     if (entries.length) { const avg = Math.ceil(entries.reduce((a, e) => a + e.total, 0) / entries.length); headline = String(avg); }
@@ -1239,6 +1270,7 @@ Hooks.once('init', () => {
   game.settings.register(NS, 'nativeForGM', { name: 'Keep native cards for the GM', hint: 'When YOU roll inside Foundry, keep the native dnd5e card but whisper it to the GM only (so you can use its buttons). Players still see this module’s unified card + cinematic. You’ll see both.', scope: 'world', config: true, type: Boolean, default: false });
   // ─── Cinematics ───
   game.settings.register(NS, 'cinematics', { name: 'Cinematic roll reveals', hint: 'Show a brief full-screen flourish when a roll lands — the roller portrait, the total, and the kind, with gold flair for a natural 20 and red for a natural 1. Shown to all players.', scope: 'world', config: true, type: Boolean, default: true });
+  game.settings.register(NS, 'cinematicDuration', { name: 'Cinematic duration (seconds)', hint: 'How long a single-roll cinematic stays on screen before it fades (also sets the spacing between back-to-back reveals and the group result reveal). Group Check / Contest / Initiative gathering stay up until you finalize them.', scope: 'world', config: true, type: Number, range: { min: 1.5, max: 10, step: 0.5 }, default: 3.5 });
   // ─── Sound (per-client) ───
   // All sound state — on/off, volume, and a file per cue (incl. every damage type) — lives in this single object,
   // edited via the "Sound Effects" submenu below. Nothing else sits on the main settings page. Ships silent (all blank).
@@ -1280,7 +1312,7 @@ Hooks.once('ready', () => {
       else if (m?.t === 'groupclear') clearGroupLocal();
     });
   } catch (e) {}
-  if (!game.user.isGM) { console.log('DDB Integrator | ready (v0.1.0)'); return; }
+  if (!game.user.isGM) { console.log('DDB Integrator | ready (v0.1.1)'); return; }
   window.DDBIntegrator = { reconnect, startOwnSocket, editMapping, editCookie, editSounds, fetchCampaignCharacters, startGroup, finalizeGroup, cancelGroup };
   // Replace/suppress Foundry's native dnd5e roll cards — this module posts its own. ONLY native ROLL cards are
   // touched (no item/usage interception, no automation): a GM roll renders our card too, then we keep the native
@@ -1313,6 +1345,17 @@ Hooks.once('ready', () => {
       if (btn) { ev.preventDefault(); cancelGroup(); }
     } catch (e) {}
   }, true);
+  // GM-only ✕ on any cinematic: reveal/end a live group session (Group Check / Contest / Initiative), otherwise dismiss
+  // the single reveal that was clicked. The cinematic root is click-through; only the .ddbx-close button takes the click.
+  document.addEventListener('click', (ev) => {
+    try {
+      const x = ev.target?.closest?.('.ddbx-close'); if (!x) return;
+      ev.preventDefault(); ev.stopPropagation();
+      if (!game.user?.isGM) return;
+      if (GroupRoll.active) { finalizeGroup(); return; }
+      const wrap = x.closest('.ddbx-sting'); if (wrap) wrap.remove();
+    } catch (e) {}
+  }, true);
   // NOTE: no Escape-to-cancel — Escape is heavily overloaded in Foundry (closing sheets, roll-config dialogs,
   // deselecting tokens), so binding it here silently killed live sessions mid-roll. Cancel via right-click on the
   // tool, or finalize by clicking the tool again.
@@ -1322,5 +1365,5 @@ Hooks.once('ready', () => {
   // Insurance: force one scene-controls re-render now that everything is wired, in case the controls had already
   // painted. The top-level getSceneControlButtons hook is what makes the tools appear; this just guarantees a paint.
   try { ui.controls?.render?.(true); } catch (e) {}
-  console.log('DDB Integrator | ready (v0.1.0)');
+  console.log('DDB Integrator | ready (v0.1.1)');
 });

@@ -95,6 +95,7 @@ const STYLES = `
 .ddbx-bg{position:absolute;inset:0;background-size:cover;background-position:center;filter:blur(64px) saturate(1.25) brightness(.6);opacity:.42;animation:ddbx-st-zoom var(--dur,3500ms) ease-out forwards;}
 @keyframes ddbx-st-zoom{0%{transform:scale(1.32);}100%{transform:scale(1.06);}}
 .ddbx-vig{position:absolute;inset:0;background:radial-gradient(ellipse 62% 58% at 50% 50%, color-mix(in srgb, var(--c2) 28%, transparent), rgba(2,2,4,.93) 74%);}
+.ddbx-scrim{position:absolute;inset:0;background:rgba(6,8,16,.62);}
 .ddbx-sting.colorbg .ddbx-vig{background:radial-gradient(ellipse 64% 60% at 50% 46%, color-mix(in srgb, var(--c1) 24%, transparent), color-mix(in srgb, var(--c2) 30%, rgba(2,2,4,.96)) 72%);}
 .ddbx-radial{position:absolute;left:50%;top:50%;width:80vh;height:80vh;transform:translate(-50%,-50%);border-radius:50%;background:radial-gradient(circle, color-mix(in srgb, var(--c1) 22%, transparent), transparent 60%);opacity:0;animation:ddbx-rad var(--dur,3500ms) ease forwards;}
 @keyframes ddbx-rad{0%{opacity:0;}12%{opacity:1;}85%{opacity:.8;}100%{opacity:0;}}
@@ -1294,6 +1295,7 @@ function fitCinematic(wrap) {
 // clear of it — the ✕ shouldn't get buried when the chat opens mid-cinematic.
 Hooks.on('collapseSidebar', () => { try { document.querySelectorAll('.ddbx-sting').forEach(el => fitCinematic(el)); } catch (e) {} });
 // Cinematics are SERIALIZED through a queue so a new one can never render on top of one already on screen.
+const VERDICT_DELAY = 3000;   // beat before the attack HIT/MISS reveals; the impact then holds for the duration setting AFTER it
 let _stQ = [], _stBusy = false;
 function playStinger(p) { try { if (!p) return; if (GroupRoll.active && game.user?.isGM) return; if (_confirmEl) return; _stQ.push(p); pumpStingers(); } catch (e) {} }
 // Single-roll cinematic on-screen time (ms), from the GM-set "Cinematic duration" setting. Clamped to a sane floor.
@@ -1357,10 +1359,10 @@ async function renderStinger(p) {
       const num = (p.total != null) ? `<div class="ddbx-result dmgnum">${esc(p.total)}</div>` : '';
       const labTxt = p.heal ? 'healing' : isHit ? `${esc(p.dtype || '')} damage`.trim() : esc(p.action || 'attack');
       const lab = `<div class="ddbx-rsub">${labTxt}</div>`;
-      wrap.innerHTML = `<div class="ddbx-vig${isHit ? ' hit' : ''}"></div>${tex}${isHit ? `<div class="ddbx-flash"></div>${damageFx(dmgType)}` : frame}<div class="ddbx-content"><div class="ddbx-impact-att">${att}</div>${focus}<div class="ddbx-impact-readout">${num}${lab}</div></div>`;
+      wrap.innerHTML = `<div class="ddbx-vig${isHit ? ' hit' : ''}"></div><div class="ddbx-scrim"></div>${tex}${isHit ? `<div class="ddbx-flash"></div>${damageFx(dmgType)}` : frame}<div class="ddbx-content"><div class="ddbx-impact-att">${att}</div>${focus}<div class="ddbx-impact-readout">${num}${lab}</div></div>`;
       // Reveal the HIT/MISS verdict a BEAT AFTER the roll lands — add the class so the ring recolours + the label pops together.
-      // ~2s on the default duration; capped below the fade so it always shows even on a short cinematic-duration setting.
-      const vDelay = Math.min(2000, Math.max(500, cineMs() - 800));
+      // The payload's dur already reserves VERDICT_DELAY + the duration setting, so the reveal always lands before the fade.
+      const vDelay = VERDICT_DELAY;
       setTimeout(() => { try { wrap.querySelectorAll('.ddbx-tfoc[data-v]').forEach(el => el.classList.add('v-' + el.dataset.v)); } catch (e) {} }, vDelay);
       if (isHit) { try { shakeScreen(p.heal ? 'soft' : ((p.total ?? 0) >= 25 ? 'hard' : 'med')); } catch (e) {} }
       // noPan: a conducted apply sequence owns the camera (zoom → pan target-to-target → zoom out); don't let the overlay also pan.
@@ -1373,7 +1375,7 @@ async function renderStinger(p) {
       // Centre: the big roll total (the "result" word) + the action/kind line beneath.
       const rsub = p.action ? esc(p.action) : '';
       const center = `<div class="ddbx-center"><div class="ddbx-burst"></div><div class="ddbx-result">${esc(p.word ?? p.total ?? '')}</div>${rsub ? `<div class="ddbx-rsub">${rsub}</div>` : ''}</div>`;
-      wrap.innerHTML = `${p.crest ? crestBg : bgEl}<div class="ddbx-vig"></div>${tex}${critFx}${frame}<div class="ddbx-pts">${particles}</div><div class="ddbx-content"><div class="ddbx-stage">${caster}${center}</div></div>`;
+      wrap.innerHTML = `${p.crest ? crestBg : bgEl}<div class="ddbx-vig"></div><div class="ddbx-scrim"></div>${tex}${critFx}${frame}<div class="ddbx-pts">${particles}</div><div class="ddbx-content"><div class="ddbx-stage">${caster}${center}</div></div>`;
     }
     // GM-only ✕ to dismiss this reveal early (the cinematic root is click-through; the button re-enables its own clicks).
     if (game.user?.isGM) wrap.insertAdjacentHTML('beforeend', '<div class="ddbx-close" title="Dismiss">✕</div>');
@@ -1415,13 +1417,16 @@ function announce(card) {
       // Verdict OFF → the GM confirms each target by hand on a persistent confirm cinematic (resolves to the reveal itself).
       if (card.kind === 'attack' && game.user?.isGM && !showVerdict && (card.targets || []).length) { openConfirm(card); return; }
       const nts = buildNativeTargets(card.targets);
+      const tgtsP = nts.map(nt => ({ name: nt.name || '', img: nt.img || '', hit: showVerdict ? hitForUuid(nt.uuid) : null }));   // ALL targets → overlay shows each
+      const hasVerdict = tgtsP.some(t => t.hit === true || t.hit === false);   // a verdict extends the impact: hold the duration AFTER the reveal
       const payload = {
         phase: 'impact', kind: card.kind, total: card.total, dtype, heal: !!card.heal, nat, action: card.action || '',
         who: card.who || actor?.name || '', actorImg: actor?.img || '', img: card.img || '', hue,
         targetName: card.target.name || '', targetImg: card.target.img || '',
-        targets: nts.map(nt => ({ name: nt.name || '', img: nt.img || '', hit: showVerdict ? hitForUuid(nt.uuid) : null })),   // ALL targets → overlay shows each
+        targets: tgtsP,
         applyIds: (card.targets || []).map(t => t && t.id).filter(Boolean),   // ALL target ids → camera frames them all (read-only)
         cue: isDmg ? ('dmg.' + dmgKey(dtype)) : (nat === 20 ? 'crit' : nat === 1 ? 'fumble' : 'roll'),
+        dur: hasVerdict ? (VERDICT_DELAY + cineMs()) : undefined,   // reveal at VERDICT_DELAY, then stay for the full setting duration
       };
       playStinger(payload);
       try { game.socket?.emit(`module.${NS}`, { t: 'stinger', payload }); } catch (e) {}
@@ -1644,6 +1649,7 @@ function resolveConfirm() {
         targets: Array.from(hits, ([uuid, t]) => ({ name: t.name, img: t.img, hit: t.hit })),
         applyIds: (card.targets || []).map(t => t && t.id).filter(Boolean),
         cue: card.nat === 20 ? 'crit' : card.nat === 1 ? 'fumble' : 'roll',
+        dur: VERDICT_DELAY + cineMs(),   // same staged reveal + full-duration hold as the auto verdict
       };
       playStinger(payload); try { game.socket?.emit(`module.${NS}`, { t: 'stinger', payload }); } catch (e) {}
     } catch (e) {}
@@ -1832,7 +1838,7 @@ Hooks.once('ready', () => {
       else if (m?.t === 'groupclear') clearGroupLocal();
     });
   } catch (e) {}
-  if (!game.user.isGM) { console.log('DDB Integrator | ready (v0.2.9)'); return; }
+  if (!game.user.isGM) { console.log('DDB Integrator | ready (v0.2.10)'); return; }
   window.DDBIntegrator = { reconnect, startOwnSocket, editMapping, editCookie, editSounds, fetchCampaignCharacters, startGroup, finalizeGroup, cancelGroup };
   // Replace/suppress Foundry's native dnd5e roll cards — this module posts its own. ONLY native ROLL cards are
   // touched (no item/usage interception, no automation): a GM roll renders our card too, then we keep the native
@@ -1883,5 +1889,5 @@ Hooks.once('ready', () => {
   // Insurance: force one scene-controls re-render now that everything is wired, in case the controls had already
   // painted. The top-level getSceneControlButtons hook is what makes the tools appear; this just guarantees a paint.
   try { ui.controls?.render?.(true); } catch (e) {}
-  console.log('DDB Integrator | ready (v0.2.9)');
+  console.log('DDB Integrator | ready (v0.2.10)');
 });

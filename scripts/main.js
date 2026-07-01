@@ -1092,17 +1092,27 @@ async function autoApplyDamage(message) {
     if (message.flags?.[NS]?.card) return;                          // our stylized card has no tray
     if (message.flags?.dnd5e?.roll?.type !== 'damage') return;      // only damage cards (not attack/heal/check)
     if (_autoApplied.has(message.id)) return;
-    if (!_attackHits.size || (Date.now() - _attackHitsAt) > 120000) return;   // need a recent attack's hit/miss
+    // Two paths: a SAVE-spell's damage (per-target ½/0/full by save result) or an ATTACK's damage (full to hit targets).
+    const onSave = message.flags?.dnd5e?.roll?.damageOnSave;
+    const saveSeed = (onSave && _saveResults && (Date.now() - _saveResults.at) < 300000) ? _saveResults : null;
+    const atkKnown = _attackHits.size && (Date.now() - _attackHitsAt) <= 120000;
+    if (!saveSeed && !atkKnown) return;
     const rolls = message.rolls || []; if (!rolls.length) return;
     const agg = game.dnd5e?.dice?.aggregateDamageRolls;
     const dmgRolls = agg ? agg(rolls, { respectProperties: true }) : rolls;
     const damages = dmgRolls.map(r => ({ value: Math.max(0, Math.round(Number(r?.total) || 0)), type: r?.options?.type || '', properties: new Set(r?.options?.properties || []) }));
     if (!damages.length) return;
+    const passMult = onSave === 'half' ? 0.5 : onSave === 'none' ? 0 : 1;
     _autoApplied.add(message.id);
     for (const t of (message.flags?.dnd5e?.targets || [])) {
-      const uuid = t?.uuid; if (!uuid || _attackHits.get(uuid) === false) continue;   // skip missed targets
+      const uuid = t?.uuid; if (!uuid) continue;
+      let mult;
+      if (saveSeed && saveSeed.results.has(uuid)) mult = saveSeed.results.get(uuid) ? passMult : 1;   // save: pass → ½/0/full
+      else if (atkKnown) { if (_attackHits.get(uuid) === false) continue; mult = 1; }                  // attack: skip misses
+      else continue;   // no hit/save info for this target → leave it manual
+      if (!mult) continue;   // ×0 → nothing to apply
       let actor = null; try { actor = fromUuidSync(uuid); } catch (e) {}
-      try { await actor?.applyDamage?.(damages, { multiplier: 1, isDelta: true, origin: message, originatingMessage: message }); } catch (e) {}
+      try { await actor?.applyDamage?.(damages, { multiplier: mult, isDelta: true, origin: message, originatingMessage: message }); } catch (e) {}
     }
   } catch (e) { console.warn('DDB Integrator | autoApplyDamage', e); }
 }
@@ -1127,6 +1137,24 @@ Hooks.on('createChatMessage', (message) => {
     if (GroupRoll.mode === 'save') { GroupRoll.saveDC = info.dc; GroupRoll.saveAbility = info.ability; broadcastGroup('gathering'); }
   } catch (e) { console.warn('DDB Integrator | save auto-arm', e); }
 });
+// Roll saves for the GM's TARGETED tokens, not the selected ones. dnd5e's native save button rolls for getSceneTargets() =
+// canvas.tokens.controlled (SELECTED); the GM's workflow TARGETS the affected creatures (like attacks), and those are the
+// tokens the damage card will hit. Intercept the button in capture phase: when the GM has targets, roll each targeted token's
+// save vs the button's DC and swallow the native (selected) roll. Players, or a GM with no targets, fall through to native.
+document.addEventListener('click', ev => {
+  try {
+    if (!game.user?.isGM || !(game.user.targets?.size)) return;
+    const el = ev.target?.closest?.('[data-action="rollSave"], [data-type="save"]');
+    if (!el || el.dataset?.dc == null) return;
+    const dc = parseInt(el.dataset.dc); const ability = String(el.dataset.ability || '').split('|')[0];
+    if (!ability) return;
+    ev.stopImmediatePropagation(); ev.preventDefault();   // take over — roll the TARGETED tokens' saves instead of the selected
+    for (const token of game.user.targets) {
+      const actor = token?.actor; if (!actor?.rollSavingThrow) continue;
+      try { actor.rollSavingThrow({ event: ev, ability, target: Number.isFinite(dc) ? dc : undefined }); } catch (e) {}
+    }
+  } catch (e) { console.warn('DDB Integrator | targeted saves', e); }
+}, true);
 // Seed the native damage tray's per-target multipliers (×0 for targets the attack missed). dnd5e's tray exposes the public
 // getTargetOptions(uuid) → mutating the live options object pre-presses the matching multiplier button + recalculates the
 // row total when the tray lazily builds (on scroll/open) — which always happens AFTER this render hook (verified in 5.3.3).
@@ -1135,13 +1163,23 @@ Hooks.on('createChatMessage', (message) => {
 const _seededTrays = new Set();
 Hooks.on('dnd5e.renderChatMessage', (message, html) => {
   try {
-    const plan = message?.flags?.[NS]?.multipliers;
-    if (!plan?.length || _seededTrays.has(message.id)) return;
+    if (_seededTrays.has(message.id)) return;
+    const plan = message?.flags?.[NS]?.multipliers;               // missed attack targets → ×0
+    const onSave = message?.flags?.dnd5e?.roll?.damageOnSave;      // save-for-half: "half" | "none" | "full"
+    const saveSeed = (onSave && _saveResults && (Date.now() - _saveResults.at) < 300000) ? _saveResults : null;
+    if (!plan?.length && !saveSeed) return;
     const root = html instanceof HTMLElement ? html : (html?.[0] || null);
     let el = root?.querySelector?.('damage-application');
     if (!el) el = document.querySelector(`[data-message-id="${message.id}"] damage-application`);
     if (!el?.getTargetOptions) return;   // GM-only element; absent for players or if the tray didn't render
-    for (const { uuid, multiplier } of plan) { try { el.getTargetOptions(uuid).multiplier = multiplier; } catch (e) {} }
+    for (const { uuid, multiplier } of (plan || [])) { try { el.getTargetOptions(uuid).multiplier = multiplier; } catch (e) {} }
+    if (saveSeed) {
+      const passMult = onSave === 'half' ? 0.5 : onSave === 'none' ? 0 : 1;   // passed save → ½ / 0 / full; failed → full
+      for (const t of (message?.flags?.dnd5e?.targets || [])) {
+        const uuid = t?.uuid; if (!uuid || !saveSeed.results.has(uuid)) continue;
+        try { el.getTargetOptions(uuid).multiplier = saveSeed.results.get(uuid) ? passMult : 1; } catch (e) {}
+      }
+    }
     _seededTrays.add(message.id);
   } catch (e) {}
 });
@@ -1912,7 +1950,7 @@ Hooks.once('ready', () => {
       else if (m?.t === 'groupclear') clearGroupLocal();
     });
   } catch (e) {}
-  if (!game.user.isGM) { console.log('DDB Integrator | ready (v0.2.13)'); return; }
+  if (!game.user.isGM) { console.log('DDB Integrator | ready (v0.2.14)'); return; }
   window.DDBIntegrator = { reconnect, startOwnSocket, editMapping, editCookie, editSounds, fetchCampaignCharacters, startGroup, finalizeGroup, cancelGroup };
   // Replace/suppress Foundry's native dnd5e roll cards — this module posts its own. ONLY native ROLL cards are
   // touched (no item/usage interception, no automation): a GM roll renders our card too, then we keep the native
@@ -1963,5 +2001,5 @@ Hooks.once('ready', () => {
   // Insurance: force one scene-controls re-render now that everything is wired, in case the controls had already
   // painted. The top-level getSceneControlButtons hook is what makes the tools appear; this just guarantees a paint.
   try { ui.controls?.render?.(true); } catch (e) {}
-  console.log('DDB Integrator | ready (v0.2.13)');
+  console.log('DDB Integrator | ready (v0.2.14)');
 });

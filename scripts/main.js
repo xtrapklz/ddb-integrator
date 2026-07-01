@@ -288,6 +288,16 @@ let _lastToast = 0;
 function gmToast(msg) { try { if (!game.user?.isGM) return; const n = Date.now(); if (n - _lastToast < 4000) return; _lastToast = n; ui.notifications?.warn(`DDB Integrator: ${msg}`); } catch (e) {} }
 // Trim an insertion-ordered Set to its most-recent `max` ids (the dedupe Sets would otherwise grow all session).
 function capSet(set, max) { try { if (set.size <= max) return; let drop = set.size - max; for (const v of set) { if (drop-- <= 0) break; set.delete(v); } } catch (e) {} }
+// Does this single-roll reveal fire? Cuts cinematic fatigue: 'all' (default) · 'notable' (attacks/saves + any nat20/nat1) ·
+// 'crits' (only nat20/nat1). Only gates the per-ROLL flourish in announce(); damage-apply impacts are never filtered.
+function worthCinematic(card) {
+  let scope = 'all'; try { scope = game.settings.get(NS, 'cinematicScope') || 'all'; } catch (e) {}
+  if (scope === 'all') return true;
+  const crit = card?.nat === 20 || card?.nat === 1;
+  if (scope === 'crits') return crit;
+  return crit || card?.kind === 'attack' || card?.kind === 'save' || card?.kind === 'death';   // 'notable' (attacks/saves/death + crits)
+}
+function hideSaveDC() { try { return game.settings.get(NS, 'hideSaveDC'); } catch (e) { return false; } }
 // Harden a stinger payload received over the socket (ANY client can emit one) before it reaches innerHTML.
 function sanitizeStinger(p) {
   if (!p || typeof p !== 'object') return null;
@@ -447,7 +457,7 @@ function actionCard(c) {
   const title = `<div class="ddbx2-pc-title">${esc(c.action || 'Action')}</div>`;
   const cells = [];
   if (c.toHit) cells.push(`<div class="ddbx2-ac-cell"><div class="ddbx2-ac-lbl"><i class="fas fa-crosshairs"></i> To Hit</div><div class="ddbx2-ac-val hit">${esc(c.toHit.value)}</div></div>`);
-  if (c.save) cells.push(`<div class="ddbx2-ac-cell"><div class="ddbx2-ac-lbl"><i class="fas fa-shield-halved"></i> ${esc((c.save.ability || '').toUpperCase())} Save</div><div class="ddbx2-ac-val save">${c.save.dc != null ? `DC ${esc(c.save.dc)}` : 'Save'}</div></div>`);
+  if (c.save) { const showDC = c.save.dc != null && !hideSaveDC(); cells.push(`<div class="ddbx2-ac-cell"><div class="ddbx2-ac-lbl"><i class="fas fa-shield-halved"></i> ${esc((c.save.ability || '').toUpperCase())} Save</div><div class="ddbx2-ac-val save">${showDC ? `DC ${esc(c.save.dc)}` : 'Save'}</div></div>`); }
   if (c.damage) cells.push(`<div class="ddbx2-ac-cell"><div class="ddbx2-ac-lbl"><i class="fas fa-tint"></i> Damage</div><div class="ddbx2-ac-val dmg">${esc(c.damage.total)}</div></div>`);
   const nums = cells.length ? `<div class="ddbx2-ac-nums${cells.length > 1 ? ' two' : ''}">${cells.join('')}</div>` : '';
   let chips = '';
@@ -1663,6 +1673,7 @@ function announce(card) {
       let showVerdict = false; try { showVerdict = game.settings.get(NS, 'autoConfirmHits'); } catch (e) {}
       // Verdict OFF → the GM confirms each target by hand on a persistent confirm cinematic (resolves to the reveal itself).
       if (card.kind === 'attack' && game.user?.isGM && !showVerdict && (card.targets || []).length) { openConfirm(card); return; }
+      if (!worthCinematic(card)) return;   // scope filter — skip the flourish (card still posted); GM confirm above is unaffected
       const nts = buildNativeTargets(card.targets);
       const tgtsP = nts.map(nt => ({ name: nt.name || '', img: nt.img || '', hit: showVerdict ? hitForUuid(nt.uuid) : null }));   // ALL targets → overlay shows each
       const hasVerdict = tgtsP.some(t => t.hit === true || t.hit === false);   // a verdict extends the impact: hold the duration AFTER the reveal
@@ -1679,6 +1690,7 @@ function announce(card) {
       try { game.socket?.emit(`module.${NS}`, { t: 'stinger', payload }); } catch (e) {}
       return;
     }
+    if (!worthCinematic(card)) return;   // scope filter — a plain check/skill reveal is skipped under 'notable' / 'crits'
     // Tone: gold for a nat 20, red for a nat 1, else neutral by kind colour.
     let tone = 'gen';
     if (nat === 20) tone = 'crit'; else if (nat === 1) tone = 'critmiss';
@@ -1754,7 +1766,7 @@ function groupPayload(phase, headline) {
     who: e.who || '', img: e.actorImg || '', actionImg: e.actionImg || '',
     label: e.label || '', total: (e.total == null ? null : e.total), sub: e.sub || '', win: e.win ?? null, pf: e.pf ?? null,
   }));
-  return { mode: GroupRoll.mode || 'check', phase, headline: headline || '', entries, saveDC: GroupRoll.saveDC ?? null };
+  return { mode: GroupRoll.mode || 'check', phase, headline: headline || '', entries, saveDC: (GroupRoll.saveDC != null && !hideSaveDC()) ? GroupRoll.saveDC : null };
 }
 // GM: push the current session state to every client (and render locally).
 function broadcastGroup(phase, headline) {
@@ -2082,9 +2094,11 @@ Hooks.once('init', () => {
   // ─── Cinematics ───
   game.settings.register(NS, 'cinematics', { name: 'Cinematic roll reveals', hint: 'Show a brief full-screen flourish when a roll lands — the roller portrait, the total, and the kind, with gold flair for a natural 20 and red for a natural 1. Shown to all players.', scope: 'world', config: true, type: Boolean, default: true });
   game.settings.register(NS, 'cinematicDuration', { name: 'Cinematic duration (seconds)', hint: 'How long a single-roll cinematic stays on screen before it fades (also sets the spacing between back-to-back reveals and the group result reveal). Group Check / Contest / Initiative gathering stay up until you finalize them.', scope: 'world', config: true, type: Number, range: { min: 1.5, max: 10, step: 0.5 }, default: 3.5 });
+  game.settings.register(NS, 'cinematicScope', { name: 'When roll reveals fire', hint: 'Cut cinematic fatigue by limiting which single-roll flourishes play. All rolls (default) · Notable only (attacks, saves, and any natural 20 / natural 1 — skips routine ability & skill checks) · Crits only (natural 20 / natural 1). Damage-impact reveals when you apply damage always play, and group Check / Contest / Save cinematics are unaffected.', scope: 'world', config: true, type: String, choices: { all: 'All rolls', notable: 'Notable only (attacks, saves, crits)', crits: 'Crits only (nat 20 / nat 1)' }, default: 'all' });
   game.settings.register(NS, 'autoConfirmHits', { name: 'Attack hit / miss verdict', hint: 'On an attack, mark each target HIT or MISS — green or red — on the cinematic + the chat card, decided by the roll vs the target’s AC. Turn OFF and you confirm each target’s hit/miss by hand on a cinematic prompt instead. GM only.', scope: 'world', config: true, type: Boolean, default: true });
   game.settings.register(NS, 'autoApplyDamage', { name: 'Auto-apply damage (alpha)', hint: '⚠ Alpha. Automatically apply attack damage to your HIT targets as it rolls, so you don’t click the tray’s Apply button. Missed targets are skipped and resistances/vulnerabilities still apply. GM only, off by default. Saving-throw and direct-damage spells still need a manual Apply for now. Don’t also click Apply while this is on, or the damage lands twice.', scope: 'world', config: true, type: Boolean, default: false });
   game.settings.register(NS, 'respectTokenVisibility', { name: 'Hide unrevealed targets from players', hint: 'On the shared card + cinematic, replace a target’s name and portrait with “Unknown” + a mystery silhouette when Foundry would hide that token from players (GM-hidden, or a display-name setting that isn’t player-visible). Stops an ambush or an unrevealed NPC being spoiled on-screen. The GM’s own targeting, hit/miss and multipliers are unaffected. On by default.', scope: 'world', config: true, type: Boolean, default: true });
+  game.settings.register(NS, 'hideSaveDC', { name: 'Hide save DCs from players', hint: 'When on, the unified save card and the group save cinematic show just “Save” instead of the numeric DC, so the target number isn’t broadcast to the table. Pass/fail is still resolved against the real DC behind the scenes. Off by default.', scope: 'world', config: true, type: Boolean, default: false });
   game.settings.register(NS, 'debug', { name: 'Debug logging', hint: 'Log otherwise-silent internal warnings to the browser console (prefixed [ddbx]) to help diagnose an issue. Off by default.', scope: 'client', config: true, type: Boolean, default: false });
   // ─── Sound (per-client) ───
   // All sound state — on/off, volume, and a file per cue (incl. every damage type) — lives in this single object,
@@ -2128,7 +2142,7 @@ Hooks.once('ready', () => {
       else if (m?.t === 'groupclear') clearGroupLocal();
     });
   } catch (e) {}
-  if (!game.user.isGM) { console.log('DDB Integrator | ready (v0.2.23)'); return; }
+  if (!game.user.isGM) { console.log('DDB Integrator | ready (v0.2.24)'); return; }
   window.DDBIntegrator = { reconnect, startOwnSocket, editMapping, editCookie, editSounds, fetchCampaignCharacters, startGroup, finalizeGroup, cancelGroup };
   // Replace/suppress Foundry's native dnd5e roll cards — this module posts its own. ONLY native ROLL cards are
   // touched (no item/usage interception, no automation): a GM roll renders our card too, then we keep the native
@@ -2200,5 +2214,5 @@ Hooks.once('ready', () => {
   // Insurance: force one scene-controls re-render now that everything is wired, in case the controls had already
   // painted. The top-level getSceneControlButtons hook is what makes the tools appear; this just guarantees a paint.
   try { ui.controls?.render?.(true); } catch (e) {}
-  console.log('DDB Integrator | ready (v0.2.23)');
+  console.log('DDB Integrator | ready (v0.2.24)');
 });

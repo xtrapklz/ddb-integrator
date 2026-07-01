@@ -138,14 +138,15 @@ const STYLES = `
 .ddbx-strike{position:relative;width:232px;height:232px;border-radius:50%;background-size:cover;background-position:center;background-color:#15101c;box-shadow:0 0 0 4px var(--c1),0 0 0 9px rgba(0,0,0,.5),0 0 60px var(--c1);animation:ddbx-strikein 1s cubic-bezier(.18,1.3,.32,1) both;}
 .ddbx-strike .ddbx-strikesub{position:absolute;right:-6px;bottom:4px;width:84px;height:84px;border-radius:50%;background-size:cover;background-position:center;background-color:#15101c;box-shadow:0 0 0 3px var(--c1),0 0 0 6px rgba(0,0,0,.6),0 0 22px #000b;animation:ddbx-badgein .55s cubic-bezier(.15,1.4,.4,1) .5s both;}
 @keyframes ddbx-strikein{0%{opacity:0;transform:translate(-180px,-150px) rotate(-46deg) scale(.5);}55%{opacity:1;transform:translate(0,0) rotate(8deg) scale(1.12);}75%{transform:translate(0,0) rotate(-2deg) scale(.97);}100%{opacity:1;transform:translate(0,0) rotate(0) scale(1);}}
-.ddbx-target{position:relative;display:inline-block;border-radius:50%;background-size:cover;background-position:center;background-color:#15151d;box-shadow:0 0 0 4px var(--c1),0 0 0 11px rgba(0,0,0,.6),0 0 70px var(--c2);animation:ddbx-portin .8s cubic-bezier(.15,1.3,.4,1) .15s both;}
+.ddbx-target{position:relative;display:inline-block;border-radius:50%;background-size:cover;background-position:center;background-color:#15151d;box-shadow:0 0 0 4px var(--c1),0 0 0 11px rgba(0,0,0,.6),0 0 70px var(--c2);animation:ddbx-portin .8s cubic-bezier(.15,1.3,.4,1) .15s both;transition:box-shadow .45s ease,filter .45s ease;}
 .ddbx-tname{display:block;margin-top:12px;font-size:22px;font-weight:bold;letter-spacing:.16em;text-transform:uppercase;color:#fff;text-shadow:0 2px 10px #000,0 0 16px #000;animation:ddbx-textin .8s ease-out .2s both;max-width:100%;box-sizing:border-box;text-align:center;word-break:break-word;}
 .ddbx-impact-att{position:absolute;left:0;right:0;top:9vh;display:flex;justify-content:center;}
 .ddbx-impact-focus{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);display:flex;flex-wrap:wrap;align-items:center;justify-content:center;gap:16px 32px;max-width:88vw;}
 .ddbx-tfoc{display:flex;flex-direction:column;align-items:center;}
-.ddbx-verdict{display:block;margin-top:9px;font-size:26px;font-weight:900;letter-spacing:.18em;text-shadow:0 2px 10px #000,0 0 18px currentColor;animation:ddbx-reveal .55s cubic-bezier(.2,1.5,.4,1) 1.05s both;}
+.ddbx-verdict{display:block;margin-top:9px;font-size:26px;font-weight:900;letter-spacing:.18em;text-shadow:0 2px 10px #000,0 0 18px currentColor;opacity:0;}
 .ddbx-verdict.v-hit{color:#5fe07a;}
 .ddbx-verdict.v-miss{color:#ff6a6a;}
+.ddbx-tfoc.v-hit .ddbx-verdict,.ddbx-tfoc.v-miss .ddbx-verdict{animation:ddbx-reveal .55s cubic-bezier(.2,1.5,.4,1) both;}
 .ddbx-tfoc.v-hit{--c1:#4fd06a;--c2:rgba(79,208,106,.55);}
 .ddbx-tfoc.v-miss{--c1:#ff5b5b;--c2:rgba(255,91,91,.5);}
 .ddbx-tfoc.v-miss .ddbx-target{filter:grayscale(.5) brightness(.82);}
@@ -1351,11 +1352,14 @@ async function renderStinger(p) {
       // The overlay shows EVERY targeted token (portrait + name), centred and wrapping; portraits shrink as the count grows.
       const tlist = (Array.isArray(p.targets) && p.targets.length) ? p.targets : ((p.targetImg || p.targetName) ? [{ img: p.targetImg, name: p.targetName }] : []);
       const tn = tlist.length, tsz = tn <= 1 ? 218 : tn === 2 ? 176 : tn === 3 ? 148 : tn <= 6 ? 120 : 96;
-      const focus = tn ? `<div class="ddbx-impact-focus${tn > 1 ? ' multi' : ''}">${tlist.map(t => { const v = t.hit === true ? 'hit' : t.hit === false ? 'miss' : ''; return `<div class="ddbx-tfoc${v ? ' v-' + v : ''}" style="width:${tsz}px">${t.img ? `<span class="ddbx-target" style="width:${tsz}px;height:${tsz}px;background-image:url('${cleanUrl(t.img)}'),var(--ddbx-portbg)"></span>` : ''}${v ? `<span class="ddbx-verdict v-${v}">${v === 'hit' ? 'HIT' : 'MISS'}</span>` : ''}${t.name ? `<span class="ddbx-tname">${esc(t.name)}</span>` : ''}</div>`; }).join('')}</div>` : '';
+      // Verdict tiles render NEUTRAL; the v-hit/v-miss class (ring colour + label reveal) is added a beat later by JS below.
+      const focus = tn ? `<div class="ddbx-impact-focus${tn > 1 ? ' multi' : ''}">${tlist.map(t => { const v = t.hit === true ? 'hit' : t.hit === false ? 'miss' : ''; return `<div class="ddbx-tfoc"${v ? ` data-v="${v}"` : ''} style="width:${tsz}px">${t.img ? `<span class="ddbx-target" style="width:${tsz}px;height:${tsz}px;background-image:url('${cleanUrl(t.img)}'),var(--ddbx-portbg)"></span>` : ''}${v ? `<span class="ddbx-verdict v-${v}">${v === 'hit' ? 'HIT' : 'MISS'}</span>` : ''}${t.name ? `<span class="ddbx-tname">${esc(t.name)}</span>` : ''}</div>`; }).join('')}</div>` : '';
       const num = (p.total != null) ? `<div class="ddbx-result dmgnum">${esc(p.total)}</div>` : '';
       const labTxt = p.heal ? 'healing' : isHit ? `${esc(p.dtype || '')} damage`.trim() : esc(p.action || 'attack');
       const lab = `<div class="ddbx-rsub">${labTxt}</div>`;
       wrap.innerHTML = `<div class="ddbx-vig${isHit ? ' hit' : ''}"></div>${tex}${isHit ? `<div class="ddbx-flash"></div>${damageFx(dmgType)}` : frame}<div class="ddbx-content"><div class="ddbx-impact-att">${att}</div>${focus}<div class="ddbx-impact-readout">${num}${lab}</div></div>`;
+      // Reveal the HIT/MISS verdict a BEAT AFTER the roll lands — add the class so the ring recolours + the label pops together.
+      setTimeout(() => { try { wrap.querySelectorAll('.ddbx-tfoc[data-v]').forEach(el => el.classList.add('v-' + el.dataset.v)); } catch (e) {} }, 1000);
       if (isHit) { try { shakeScreen(p.heal ? 'soft' : ((p.total ?? 0) >= 25 ? 'hard' : 'med')); } catch (e) {} }
       // noPan: a conducted apply sequence owns the camera (zoom → pan target-to-target → zoom out); don't let the overlay also pan.
       if (!p.noPan) { try { panToImpactByActors(p.applyIds); } catch (e) {} }
@@ -1826,7 +1830,7 @@ Hooks.once('ready', () => {
       else if (m?.t === 'groupclear') clearGroupLocal();
     });
   } catch (e) {}
-  if (!game.user.isGM) { console.log('DDB Integrator | ready (v0.2.7)'); return; }
+  if (!game.user.isGM) { console.log('DDB Integrator | ready (v0.2.8)'); return; }
   window.DDBIntegrator = { reconnect, startOwnSocket, editMapping, editCookie, editSounds, fetchCampaignCharacters, startGroup, finalizeGroup, cancelGroup };
   // Replace/suppress Foundry's native dnd5e roll cards — this module posts its own. ONLY native ROLL cards are
   // touched (no item/usage interception, no automation): a GM roll renders our card too, then we keep the native
@@ -1877,5 +1881,5 @@ Hooks.once('ready', () => {
   // Insurance: force one scene-controls re-render now that everything is wired, in case the controls had already
   // painted. The top-level getSceneControlButtons hook is what makes the tools appear; this just guarantees a paint.
   try { ui.controls?.render?.(true); } catch (e) {}
-  console.log('DDB Integrator | ready (v0.2.7)');
+  console.log('DDB Integrator | ready (v0.2.8)');
 });

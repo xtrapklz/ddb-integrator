@@ -225,6 +225,11 @@ const STYLES = `
 .ddbx-gt-img{display:inline-block;width:134px;height:134px;border-radius:50%;background-color:#15151d;background-size:cover;background-position:center;box-shadow:0 0 0 3px var(--c1),0 0 0 7px rgba(0,0,0,.55),0 0 30px var(--c2);}
 .ddbx-gtile.win .ddbx-gt-img{box-shadow:0 0 0 5px var(--gold,#ffd34d),0 0 0 9px rgba(0,0,0,.55),0 0 46px var(--gold,#ffd34d);transform:scale(1.06);}
 .ddbx-gtile.lose{opacity:.5;filter:grayscale(.4);}
+.ddbx-gtile.pass .ddbx-gt-img{box-shadow:0 0 0 5px #4fd06a,0 0 0 9px rgba(0,0,0,.55),0 0 40px rgba(79,208,106,.6);}
+.ddbx-gtile.fail .ddbx-gt-img{box-shadow:0 0 0 5px #ff5b5b,0 0 0 9px rgba(0,0,0,.55),0 0 40px rgba(255,91,91,.55);}
+.ddbx-gt-pf{display:block;margin-top:5px;font-size:17px;font-weight:900;letter-spacing:.12em;text-transform:uppercase;text-shadow:0 2px 8px #000;}
+.ddbx-gt-pf.pass{color:#5fe07a;}
+.ddbx-gt-pf.fail{color:#ff6a6a;}
 .ddbx-gt-crown{position:absolute;top:-14px;left:50%;transform:translateX(-50%);font-size:24px;color:var(--gold,#ffd34d);text-shadow:0 0 12px #ffb300;z-index:2;animation:ddbx-badgein .5s cubic-bezier(.15,1.4,.4,1) .15s both;}
 .ddbx-gt-n{font-size:22px;font-weight:bold;color:#fff;margin-top:10px;text-shadow:0 2px 6px #000;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
 .ddbx-gt-label{display:block;font-size:14px;letter-spacing:.06em;text-transform:uppercase;color:var(--skill,#bda9e8);margin-top:3px;min-height:14px;text-shadow:0 1px 4px #000;}
@@ -270,14 +275,15 @@ function sanitizeGroup(p) {
   if (!p || typeof p !== 'object') return null;
   const num = v => { const n = Number(v); return Number.isFinite(n) ? n : null; };
   const str = (v, n = 120) => (v == null ? '' : String(v).slice(0, n));
-  const mode = p.mode === 'contest' ? 'contest' : (p.mode === 'init' ? 'init' : 'check');
+  const mode = p.mode === 'contest' ? 'contest' : (p.mode === 'init' ? 'init' : (p.mode === 'save' ? 'save' : 'check'));
   // Phases: 'gathering' (collecting rolls) or 'result' (finalized). Both presentation-only.
   const phase = p.phase === 'result' ? 'result' : 'gathering';
   const entries = Array.isArray(p.entries) ? p.entries.slice(0, 24).map(e => ({
     who: str(e?.who, 80), img: cleanUrl(e?.img), actionImg: cleanUrl(e?.actionImg),
     label: str(e?.label, 60), total: num(e?.total), sub: str(e?.sub, 40), win: e?.win === true ? true : (e?.win === false ? false : null),
+    pf: e?.pf === true ? true : (e?.pf === false ? false : null),
   })) : [];
-  return { mode, phase, headline: str(p.headline, 80), entries };
+  return { mode, phase, headline: str(p.headline, 80), entries, saveDC: num(p.saveDC) };
 }
 // Resolve the rolling character to a Foundry actor by the character mapping or by name.
 function getMapping() { try { const m = game.settings.get(NS, 'characterMapping'); if (m && Object.keys(m).length) return m; } catch (e) {} return {}; }
@@ -513,7 +519,7 @@ async function present(p) {
     if (GroupRoll.active && game.user?.isGM) {
       const isAction = card.kind === 'attack' || card.kind === 'damage';
       ingestGroupRoll({
-        who: card.who, actorId: actor?.id || null, actorImg: card.actorImg,
+        who: card.who, actorId: actor?.id || null, actorImg: card.actorImg, uuid: actor?.uuid || null,
         actionImg: card.img, isAction, label: card.action || '',
         kind: card.kind, total: card.total, nat: card.nat,
       });
@@ -629,6 +635,7 @@ function buildNativeTargets(targets) {
 // always misses); the FOLLOWING damage roll reads it to pre-set ×0 for any target the attack missed. Consumed on read so
 // a later save-spell on the same token isn't wrongly zeroed; ignored if older than two minutes.
 let _attackHits = new Map(), _attackHitsAt = 0, _attackHitsConfirmed = false;   // confirmed: manual verdict has been given
+let _saveResults = null;   // { at, dc, results: Map<actorUuid, passed:bool> } from the last resolved Group Save — feeds the damage tray
 function recordAttackHits(card) {
   try {
     const hits = new Map();
@@ -1100,6 +1107,26 @@ async function autoApplyDamage(message) {
   } catch (e) { console.warn('DDB Integrator | autoApplyDamage', e); }
 }
 Hooks.on('createChatMessage', autoApplyDamage);
+// AUTO-ARM a Group Save when an action's SAVE card posts, and capture its DC/ability so saves can be judged vs it. Reads
+// the native save button in the card (data-type="save" / data-dc / data-ability) — pure detection, we don't touch the card.
+function saveCardInfo(message) {
+  try {
+    if (message.flags?.[NS]?.card) return null;   // our stylized card, not a native save card
+    const c = String(message.content || '');
+    if (!/data-(?:type="save"|action="rollSave")/.test(c)) return null;
+    const dcM = /data-dc="(\d+)"/.exec(c), abM = /data-ability="([a-z|]+)"/.exec(c);
+    return { dc: dcM ? Number(dcM[1]) : null, ability: abM ? abM[1] : null };
+  } catch (e) { return null; }
+}
+Hooks.on('createChatMessage', (message) => {
+  try {
+    if (!game.user?.isGM) return;
+    const info = saveCardInfo(message); if (!info) return;
+    if (GroupRoll.active && GroupRoll.mode !== 'save') return;   // don't hijack a live Check / Contest / Init gather
+    if (!GroupRoll.active) startGroup('save');
+    if (GroupRoll.mode === 'save') { GroupRoll.saveDC = info.dc; GroupRoll.saveAbility = info.ability; broadcastGroup('gathering'); }
+  } catch (e) { console.warn('DDB Integrator | save auto-arm', e); }
+});
 // Seed the native damage tray's per-target multipliers (×0 for targets the attack missed). dnd5e's tray exposes the public
 // getTargetOptions(uuid) → mutating the live options object pre-presses the matching multiplier button + recalculates the
 // row total when the tray lazily builds (on scroll/open) — which always happens AFTER this render hook (verified in 5.3.3).
@@ -1515,9 +1542,9 @@ function refreshGroupControls() { try { ui.controls?.render?.(true); } catch (e)
 function groupPayload(phase, headline) {
   const entries = Array.from(GroupRoll.entries.values()).map(e => ({
     who: e.who || '', img: e.actorImg || '', actionImg: e.actionImg || '',
-    label: e.label || '', total: (e.total == null ? null : e.total), sub: e.sub || '', win: e.win ?? null,
+    label: e.label || '', total: (e.total == null ? null : e.total), sub: e.sub || '', win: e.win ?? null, pf: e.pf ?? null,
   }));
-  return { mode: GroupRoll.mode || 'check', phase, headline: headline || '', entries };
+  return { mode: GroupRoll.mode || 'check', phase, headline: headline || '', entries, saveDC: GroupRoll.saveDC ?? null };
 }
 // GM: push the current session state to every client (and render locally).
 function broadcastGroup(phase, headline) {
@@ -1528,24 +1555,27 @@ function broadcastGroup(phase, headline) {
 
 // One roller tile: portrait + action sub-circle (the .ddbx-actbadge look) + big total + label + optional sub.
 function groupTile(e) {
-  const cls = e.win === true ? ' win' : (e.win === false ? ' lose' : '');
+  const cls = (e.win === true ? ' win' : e.win === false ? ' lose' : '') + (e.pf === true ? ' pass' : e.pf === false ? ' fail' : '');
   const crown = e.win === true ? `<span class="ddbx-gt-crown"><i class="fas fa-crown"></i></span>` : '';
   const badge = e.actionImg ? `<span class="ddbx-actbadge" style="background-image:url('${cleanUrl(e.actionImg)}')"></span>` : '';
   const img = cleanUrl(e.img) || 'icons/svg/mystery-man.svg';
   const total = (e.total != null) ? `<span class="ddbx-gt-total">${esc(e.total)}</span>` : `<span class="ddbx-gt-total pend">…</span>`;
   const label = e.label ? `<span class="ddbx-gt-label">${esc(e.label)}</span>` : `<span class="ddbx-gt-label pend"><i class="fas fa-hourglass-half"></i></span>`;
   const sub = e.sub ? `<span class="ddbx-gt-sub">${esc(e.sub)}</span>` : '';
-  return `<div class="ddbx-gtile${cls}" data-who="${esc(e.who)}"><span class="ddbx-gt-port"><span class="ddbx-gt-img" style="background-image:url('${img}'),var(--ddbx-portbg)">${crown}</span>${badge}</span><div class="ddbx-gt-n">${esc(e.who)}</div>${label}${total}${sub}</div>`;
+  const pf = e.pf === true ? `<span class="ddbx-gt-pf pass">Pass</span>` : e.pf === false ? `<span class="ddbx-gt-pf fail">Fail</span>` : '';
+  return `<div class="ddbx-gtile${cls}" data-who="${esc(e.who)}"><span class="ddbx-gt-port"><span class="ddbx-gt-img" style="background-image:url('${img}'),var(--ddbx-portbg)">${crown}</span>${badge}</span><div class="ddbx-gt-n">${esc(e.who)}</div>${label}${total}${pf}${sub}</div>`;
 }
 // Header for the group cinematic: title + a "gathering rolls…" line, or the finalized result line.
 function groupHead(p) {
-  const title = p.mode === 'contest' ? 'Contest' : p.mode === 'init' ? 'Initiative' : 'Group Check';
+  const title = p.mode === 'contest' ? 'Contest' : p.mode === 'init' ? 'Initiative' : p.mode === 'save' ? 'Saving Throw' : 'Group Check';
   if (p.phase === 'result') {
     if (p.mode === 'init') return `<div class="ddbx-gh-title">${title}</div><div class="ddbx-gh-sub">turn order set</div>`;
     if (p.mode === 'contest') return `<div class="ddbx-gh-title">${title}</div><div class="ddbx-gh-sub">winner</div>${p.headline ? `<div class="ddbx-gh-result">${esc(p.headline)}</div>` : ''}`;
+    if (p.mode === 'save') return `<div class="ddbx-gh-title">${title}${p.saveDC != null ? ` &middot; DC ${p.saveDC}` : ''}</div><div class="ddbx-gh-sub">${p.headline ? esc(p.headline) : 'resolved'}</div>`;
     return `<div class="ddbx-gh-title">${title}</div>${p.headline ? `<div class="ddbx-gh-result">${esc(p.headline)}</div>` : ''}<div class="ddbx-gh-sub">party average</div>`;
   }
   const n = (p.entries || []).length;
+  if (p.mode === 'save') return `<div class="ddbx-gh-title">${title}${p.saveDC != null ? ` &middot; DC ${p.saveDC}` : ''}</div><div class="ddbx-gh-sub">gathering saves&hellip;${n ? ` &middot; ${n}` : ''}</div>`;
   return `<div class="ddbx-gh-title">${title}</div><div class="ddbx-gh-sub">gathering rolls&hellip;${n ? ` &middot; ${n}` : ''}</div>`;
 }
 // Render (or re-render in place) the group cinematic on THIS client. PERSISTENT: stays until a 'result' fade or a
@@ -1709,12 +1739,13 @@ function startGroup(mode) {
   }
   GroupRoll.active = true; GroupRoll.mode = mode; GroupRoll.entries.clear(); GroupRoll.startedAt = now;
   clearTimeout(GroupRoll.initCloseTimer); GroupRoll.initCloseTimer = null;   // fresh session — drop any pending init auto-close
+  GroupRoll.saveDC = null; GroupRoll.saveAbility = null;   // a save gather's DC is set by the auto-arm (from the save card) if known
   // Clear any in-flight / queued single-roll cinematics so none linger and overlay the group cinematic.
   try { _stQ.length = 0; _stBusy = false; document.querySelectorAll('.ddbx-sting:not(.ddbx-group)').forEach(el => el.remove()); } catch (e) {}
   clearTimeout(_groupFinalizeTimer); _groupFinalizeTimer = null;
   broadcastGroup('gathering');
   refreshGroupControls();
-  ui.notifications.info(`DDB Integrator: ${mode === 'contest' ? 'Contest' : mode === 'init' ? 'Initiative' : 'Group Check'} started — rolls will gather. ${mode === 'init' ? 'Click the ✕ on the cinematic to end.' : 'Click the tool again to finalize.'}`);
+  ui.notifications.info(`DDB Integrator: ${mode === 'contest' ? 'Contest' : mode === 'init' ? 'Initiative' : mode === 'save' ? 'Group Save' : 'Group Check'} started — rolls will gather. ${mode === 'init' ? 'Click the ✕ on the cinematic to end.' : 'Click the tool again to finalize.'}`);
 }
 // GM: route a parsed roll into the live session (called from renderRoll / renderLocalMessage). Upserts the roller's
 // tile in place (re-rolls / skill-swaps UPDATE, never add a new tile). Returns nothing — the chat card still posts.
@@ -1728,13 +1759,16 @@ function ingestGroupRoll(info) {
     // total = the big d20-test number; sub = a non-d20 value (damage) shown small. A plain check has no sub.
     const total = isD20 ? (Number(info.total) || 0) : (prev.total != null ? prev.total : null);
     const sub = !isD20 ? (info.total != null ? String(info.total) : '') : (prev.sub || '');
+    // Save gather: pass/fail vs the captured DC (null until a DC is known — then the GM still sees the roll).
+    const pf = (GroupRoll.mode === 'save' && info.kind === 'save' && GroupRoll.saveDC != null && total != null) ? (total >= GroupRoll.saveDC) : (prev.pf ?? null);
     GroupRoll.entries.set(key, {
       who: info.who || prev.who || 'Roll',
       actorImg: info.actorImg || prev.actorImg || '',
       // Action art only for an action/item roll (not a bare ability/skill check).
       actionImg: (info.isAction ? (info.actionImg || '') : '') || prev.actionImg || '',
       label: info.label || prev.label || '',
-      total, sub, nat: info.nat ?? prev.nat ?? null, win: null,   // no winner/loser during gathering — set only at finalize
+      total, sub, nat: info.nat ?? prev.nat ?? null, win: null, pf,   // no winner/loser during gathering; pf = save pass/fail
+      uuid: info.uuid || prev.uuid || null,
     });
     broadcastGroup('gathering');
   } catch (e) { console.warn('DDB Integrator | ingestGroupRoll', e); }
@@ -1753,6 +1787,12 @@ function finalizeGroup() {
     headline = winners.length ? winners.join(', ') : '—';
   } else if (mode === 'init') {
     headline = '';   // initiative: no average or winner — the rolled values are already on the combat tracker
+  } else if (mode === 'save') {
+    // Save gather: store per-token pass/fail so the damage card's tray can pre-select ½/0/full (save-for-half) next.
+    let pass = 0, fail = 0; const results = new Map();
+    for (const e of GroupRoll.entries.values()) { if (e.uuid && e.pf != null) { results.set(e.uuid, e.pf); e.pf ? pass++ : fail++; } }
+    _saveResults = { at: Date.now(), dc: GroupRoll.saveDC ?? null, results };
+    headline = (pass || fail) ? `${pass} passed · ${fail} failed` : '—';
   } else {
     // Group Check: AVERAGE of all totals, rounded UP.
     if (entries.length) { const avg = Math.ceil(entries.reduce((a, e) => a + e.total, 0) / entries.length); headline = String(avg); }
@@ -1801,8 +1841,14 @@ Hooks.on('getSceneControlButtons', (controls) => {
       icon: 'fas fa-people-arrows', toggle: true, active: contestActive, visible: true,
       onChange: () => startGroup('contest'), onClick: () => startGroup('contest'),
     };
-    if (Array.isArray(group.tools)) group.tools.push(t1, t2);   // legacy array form
-    else { group.tools[t1.name] = t1; group.tools[t2.name] = t2; }   // V13/V14 record form
+    const saveActive = GroupRoll.active && GroupRoll.mode === 'save';
+    const t3 = {
+      name: 'ddbiGroupSave', title: 'DDB: Group Save — gather saving throws and mark pass/fail vs the DC; click again to finish (right-click cancels). Auto-opens when an action with a save is used.',
+      icon: 'fas fa-shield-halved', toggle: true, active: saveActive, visible: true,
+      onChange: () => startGroup('save'), onClick: () => startGroup('save'),
+    };
+    if (Array.isArray(group.tools)) group.tools.push(t1, t2, t3);   // legacy array form
+    else { group.tools[t1.name] = t1; group.tools[t2.name] = t2; group.tools[t3.name] = t3; }   // V13/V14 record form
   } catch (e) { console.warn('DDB Integrator | scene controls', e); }
 });
 
@@ -1866,7 +1912,7 @@ Hooks.once('ready', () => {
       else if (m?.t === 'groupclear') clearGroupLocal();
     });
   } catch (e) {}
-  if (!game.user.isGM) { console.log('DDB Integrator | ready (v0.2.12)'); return; }
+  if (!game.user.isGM) { console.log('DDB Integrator | ready (v0.2.13)'); return; }
   window.DDBIntegrator = { reconnect, startOwnSocket, editMapping, editCookie, editSounds, fetchCampaignCharacters, startGroup, finalizeGroup, cancelGroup };
   // Replace/suppress Foundry's native dnd5e roll cards — this module posts its own. ONLY native ROLL cards are
   // touched (no item/usage interception, no automation): a GM roll renders our card too, then we keep the native
@@ -1917,5 +1963,5 @@ Hooks.once('ready', () => {
   // Insurance: force one scene-controls re-render now that everything is wired, in case the controls had already
   // painted. The top-level getSceneControlButtons hook is what makes the tools appear; this just guarantees a paint.
   try { ui.controls?.render?.(true); } catch (e) {}
-  console.log('DDB Integrator | ready (v0.2.12)');
+  console.log('DDB Integrator | ready (v0.2.13)');
 });

@@ -143,7 +143,7 @@ const STYLES = `
 .ddbx-impact-att{position:absolute;left:0;right:0;top:9vh;display:flex;justify-content:center;}
 .ddbx-impact-focus{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);display:flex;flex-wrap:wrap;align-items:center;justify-content:center;gap:16px 32px;max-width:88vw;}
 .ddbx-tfoc{display:flex;flex-direction:column;align-items:center;}
-.ddbx-verdict{display:block;margin-top:9px;font-size:22px;font-weight:900;letter-spacing:.18em;text-shadow:0 2px 10px #000,0 0 18px currentColor;animation:ddbx-reveal .5s cubic-bezier(.2,1.5,.4,1) .35s both;}
+.ddbx-verdict{display:block;margin-top:9px;font-size:26px;font-weight:900;letter-spacing:.18em;text-shadow:0 2px 10px #000,0 0 18px currentColor;animation:ddbx-reveal .55s cubic-bezier(.2,1.5,.4,1) 1.05s both;}
 .ddbx-verdict.v-hit{color:#5fe07a;}
 .ddbx-verdict.v-miss{color:#ff6a6a;}
 .ddbx-tfoc.v-hit{--c1:#4fd06a;--c2:rgba(79,208,106,.55);}
@@ -152,14 +152,15 @@ const STYLES = `
 .ddbx-cfhead{position:absolute;left:0;right:0;top:1vh;text-align:center;font-size:20px;letter-spacing:.14em;text-transform:uppercase;color:#fff;text-shadow:0 2px 10px #000;}
 .ddbx-cfhead b{color:#ffd76a;}
 .ddbx-vbtns{display:flex;gap:8px;margin-top:11px;pointer-events:auto;}
-.ddbx-vbtn{font:700 13px/1 var(--font-primary,'Signika',sans-serif);letter-spacing:.05em;text-transform:uppercase;padding:8px 12px;border-radius:8px;border:1.5px solid rgba(255,255,255,.3);background:rgba(0,0,0,.55);color:#cfcfcf;cursor:pointer;transition:background .12s,border-color .12s,color .12s;}
+.ddbx-vbtn{font:700 16px/1 var(--font-primary,'Signika',sans-serif);letter-spacing:.06em;text-transform:uppercase;padding:11px 17px;border-radius:9px;border:1.5px solid rgba(255,255,255,.3);background:rgba(0,0,0,.55);color:#cfcfcf;cursor:pointer;transition:background .12s,border-color .12s,color .12s;}
 .ddbx-vbtn:hover{border-color:#fff;color:#fff;}
 .ddbx-vbtn.hit.on{background:rgba(79,208,106,.92);border-color:#4fd06a;color:#08210d;}
 .ddbx-vbtn.miss.on{background:rgba(255,91,91,.92);border-color:#ff5b5b;color:#2a0808;}
 .ddbx-confirm-done{position:absolute;top:var(--ci-y,6vh);right:var(--ci-x,6vw);padding:11px 20px;border-radius:24px;background:rgba(79,208,106,.94);border:1.6px solid #6be27a;color:#06220c;font:800 15px/1 var(--font-primary,'Signika',sans-serif);letter-spacing:.05em;cursor:pointer;pointer-events:auto;z-index:31;transition:transform .12s,background .12s;}
 .ddbx-confirm-done:hover{transform:scale(1.05);background:#6be27a;}
-.ddbx-impact-focus.multi .ddbx-verdict{font-size:15px;margin-top:6px;}
-.ddbx-impact-focus.multi .ddbx-tname{font-size:15px;margin-top:8px;letter-spacing:.08em;}
+.ddbx-impact-focus.multi .ddbx-verdict{font-size:19px;margin-top:7px;}
+.ddbx-impact-focus.multi .ddbx-tname{font-size:18px;margin-top:9px;letter-spacing:.08em;}
+.ddbx-confirm .ddbx-tname{font-size:19px;}
 .lay-orbit .ddbx-impact-focus .ddbx-target{width:218px;height:218px;}
 .ddbx-impact-readout{position:absolute;left:0;right:0;bottom:13vh;display:flex;flex-direction:column;align-items:center;gap:6px;}
 .lay-orbit .ddbx-impact-readout .ddbx-result{font-size:120px;}
@@ -1011,52 +1012,53 @@ function attackerTokenFromMessage(msg) {
   } catch (e) {}
   return null;
 }
-// ONE impact flash on a target (single damage type, short on-screen duration). noPan: the batch owns the camera.
-function castImpact(actor, token, type, value, dur) {
+// ONE group impact flash: ALL target portraits at once, a single damage type + its group total. noPan — the batch pans.
+function castGroupImpact(portraits, applyIds, type, value, dur) {
   const payload = {
     phase: 'impact', kind: 'damage', total: value, dtype: type || '', heal: false, nat: null, action: '', noPan: true, dur,
-    who: '', actorImg: '', img: '', hue: null,
-    targetName: actor?.name || '', targetImg: actor?.img || '',
-    targets: [{ name: actor?.name || '', img: actor?.img || '' }],
-    applyIds: token?.id ? [token.id] : [], cue: 'dmg.' + dmgKey(type || ''),
+    who: '', actorImg: '', img: '', hue: null, targetName: '', targetImg: '',
+    targets: (portraits || []).slice(0, 24).map(p => ({ name: p.name || '', img: p.img || '' })),
+    applyIds: applyIds || [], cue: 'dmg.' + dmgKey(type || ''),
   };
   playStinger(payload);
   try { game.socket?.emit(`module.${NS}`, { t: 'stinger', payload }); } catch (e) {}
 }
-// Conduct the buffered applies: zoom to each TARGET once, flash each of its damage types fast, then zoom out on the attacker.
+// Conduct the buffered applies: ONE tight zoom fitting the WHOLE group of hit targets, then flash the damage types across
+// all of them AT ONCE (no per-target walk), then zoom back out on the attacker.
 async function flushApplyBuffer() {
   if (_applyRunning) { _applyTimer = setTimeout(flushApplyBuffer, 150); return; }   // a sequence is mid-run — retry shortly
   const items = _applyBuf.slice(); _applyBuf = [];
   const attacker = _applyAttacker; _applyAttacker = null;
   if (!items.length) return;
   for (const it of items) { if (it.stylizedId) updateStylizedDamage(it.stylizedId, it.amt, it.multiplier); }
-  // Group apply events by TARGET so a multi-type hit flashes its types on one framing instead of re-zooming per type.
-  const groups = [], byKey = new Map();
+  // Unique target tokens + portraits, and the damage total PER TYPE summed across the whole group.
+  const tokById = new Map(), portraits = [], seen = new Set(), byType = new Map();
   for (const it of items) {
-    const k = it.token?.id || it.actor?.id || ('?' + groups.length);
-    let g = byKey.get(k); if (!g) { g = { token: it.token, actor: it.actor, flashes: [] }; byKey.set(k, g); groups.push(g); }
+    if (it.token && !tokById.has(it.token.id)) tokById.set(it.token.id, it.token);
+    const key = it.actor?.uuid || it.actor?.id || it.actor?.name;
+    if (key && !seen.has(key)) { seen.add(key); portraits.push({ name: it.actor?.name || '', img: it.actor?.img || '' }); }
     const parts = (Array.isArray(it.parts) && it.parts.length) ? it.parts : [{ type: '', value: it.amt }];
-    for (const p of parts) g.flashes.push({ type: p.type, value: p.value });
+    for (const p of parts) byType.set(p.type || '', (byType.get(p.type || '') || 0) + (Number(p.value) || 0));
   }
+  const tokens = Array.from(tokById.values());
+  const types = Array.from(byType, ([type, total]) => ({ type, total: Math.round(total) }));
+  const applyIds = tokens.map(t => t.id);
   let visuals = true; try { visuals = game.settings.get(NS, 'cinematics'); } catch (e) {}
-  if (!visuals) { for (const g of groups) for (const f of g.flashes) castImpact(g.actor, g.token, f.type, f.value, cineMs()); return; }
+  if (!visuals) { for (const t of types) castGroupImpact(portraits, applyIds, t.type, t.total, cineMs()); return; }
   _applyRunning = true;
-  // Capture the TRUE original view ONCE, LOCALLY (pre-attack view if an attack just zoomed in, else the current view), and
-  // cancel the attack impact's pending restore timer so it can't yank the camera or null the view out from under us.
+  // Capture the TRUE original view ONCE, LOCALLY, and cancel any pending attack-impact restore so it can't yank the camera.
   let origin = _preImpactView ? { ..._preImpactView } : null;
   if (!origin) { try { if (canvas?.ready) origin = { x: canvas.stage.pivot.x, y: canvas.stage.pivot.y, scale: canvas.stage.scale.x }; } catch (e) {} }
   try { clearTimeout(_restoreTimer); } catch (e) {}
   _preImpactView = null;   // the batch owns the camera now
   const base = cineMs();
   try {
-    for (const g of groups) {
-      if (g.token) await panToTokens([g.token], 340);   // AWAIT the pan so the camera fully RESTS before the overlay (no mid-pan doubling)
-      await delay(130);                                  // let it settle a beat, then reveal the portrait
-      const multi = g.flashes.length > 1;
-      const fdur = multi ? Math.max(430, Math.round(base * 0.28)) : Math.max(600, Math.round(base * 0.46));   // faster: a fraction of the duration setting
-      for (const f of g.flashes) { castImpact(g.actor, g.token, f.type, f.value, fdur); await delay(fdur + 320); }
-    }
-    // Zoom back OUT to the original scale, re-centred on the triggering actor (or restore the original view if no token).
+    if (tokens.length) await panToTokens(tokens, 460, 2.0);   // ONE tight zoom fitting the ENTIRE group of targets
+    await delay(170);                                          // let the zoom rest before the reveal
+    const multi = types.length > 1;
+    const fdur = multi ? Math.max(650, Math.round(base * 0.5)) : Math.max(850, Math.round(base * 0.72));
+    for (const t of types) { castGroupImpact(portraits, applyIds, t.type, t.total, fdur); await delay(fdur + 320); }
+    // Zoom back OUT to the original scale, re-centred on the attacker (or restore the original view).
     if (attacker && origin) { try { const c = attacker.center; canvas.animatePan({ x: c.x, y: c.y, scale: origin.scale, duration: 680 }); } catch (e) {} }
     else if (origin) { try { canvas.animatePan({ ...origin, duration: 680 }); } catch (e) {} }
   } finally { clearPreImpactView(); _applyRunning = false; if (_applyBuf.length) _applyTimer = setTimeout(flushApplyBuffer, 80); }
@@ -1201,15 +1203,14 @@ function resolveTokens(ids) {
   return toks;
 }
 // Pan/zoom the canvas to frame the given tokens (read-only camera move; no store, no auto-restore).
-function panToTokens(toks, duration = 480) {
+function panToTokens(toks, duration = 480, pad = 2.6) {
   try {
     if (!canvas?.ready || !(toks || []).length) return;
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
     for (const t of toks) { const c = t.center, r = Math.max(t.w, t.h) * 0.5; minX = Math.min(minX, c.x - r); maxX = Math.max(maxX, c.x + r); minY = Math.min(minY, c.y - r); maxY = Math.max(maxY, c.y + r); }
     const cx = (minX + maxX) / 2, cy = (minY + maxY) / 2;
     const bw = Math.max(1, maxX - minX), bh = Math.max(1, maxY - minY);
-    const pad = 2.6;
-    const scale = Math.max(0.25, Math.min(1.7, Math.min(window.innerWidth / (bw * pad), window.innerHeight / (bh * pad))));
+    const scale = Math.max(0.25, Math.min(1.7, Math.min(window.innerWidth / (bw * pad), window.innerHeight / (bh * pad))));   // pad: lower = tighter fit
     // Return the animation promise so callers can AWAIT the pan settling before revealing an overlay (.catch so an
     // interrupted pan never rejects the await).
     const pr = canvas.animatePan({ x: cx, y: cy, scale, duration });
@@ -1825,7 +1826,7 @@ Hooks.once('ready', () => {
       else if (m?.t === 'groupclear') clearGroupLocal();
     });
   } catch (e) {}
-  if (!game.user.isGM) { console.log('DDB Integrator | ready (v0.2.6)'); return; }
+  if (!game.user.isGM) { console.log('DDB Integrator | ready (v0.2.7)'); return; }
   window.DDBIntegrator = { reconnect, startOwnSocket, editMapping, editCookie, editSounds, fetchCampaignCharacters, startGroup, finalizeGroup, cancelGroup };
   // Replace/suppress Foundry's native dnd5e roll cards — this module posts its own. ONLY native ROLL cards are
   // touched (no item/usage interception, no automation): a GM roll renders our card too, then we keep the native
@@ -1876,5 +1877,5 @@ Hooks.once('ready', () => {
   // Insurance: force one scene-controls re-render now that everything is wired, in case the controls had already
   // painted. The top-level getSceneControlButtons hook is what makes the tools appear; this just guarantees a paint.
   try { ui.controls?.render?.(true); } catch (e) {}
-  console.log('DDB Integrator | ready (v0.2.6)');
+  console.log('DDB Integrator | ready (v0.2.7)');
 });

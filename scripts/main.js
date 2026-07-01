@@ -139,29 +139,29 @@ const STYLES = `
 .ddbx-strike .ddbx-strikesub{position:absolute;right:-6px;bottom:4px;width:84px;height:84px;border-radius:50%;background-size:cover;background-position:center;background-color:#15101c;box-shadow:0 0 0 3px var(--c1),0 0 0 6px rgba(0,0,0,.6),0 0 22px #000b;animation:ddbx-badgein .55s cubic-bezier(.15,1.4,.4,1) .5s both;}
 @keyframes ddbx-strikein{0%{opacity:0;transform:translate(-180px,-150px) rotate(-46deg) scale(.5);}55%{opacity:1;transform:translate(0,0) rotate(8deg) scale(1.12);}75%{transform:translate(0,0) rotate(-2deg) scale(.97);}100%{opacity:1;transform:translate(0,0) rotate(0) scale(1);}}
 .ddbx-target{position:relative;display:inline-block;border-radius:50%;background-size:cover;background-position:center;background-color:#15151d;box-shadow:0 0 0 4px var(--c1),0 0 0 11px rgba(0,0,0,.6),0 0 70px var(--c2);animation:ddbx-portin .8s cubic-bezier(.15,1.3,.4,1) .15s both;transition:box-shadow .45s ease,filter .45s ease;}
-.ddbx-tname{display:block;margin-top:12px;font-size:22px;font-weight:bold;letter-spacing:.16em;text-transform:uppercase;color:#fff;text-shadow:0 2px 10px #000,0 0 16px #000;animation:ddbx-textin .8s ease-out .2s both;max-width:100%;box-sizing:border-box;text-align:center;word-break:break-word;}
+.ddbx-tname{display:block;margin-top:12px;font-size:25px;font-weight:bold;letter-spacing:.16em;text-transform:uppercase;color:#fff;text-shadow:0 2px 10px #000,0 0 16px #000;animation:ddbx-textin .8s ease-out .2s both;max-width:100%;box-sizing:border-box;text-align:center;word-break:break-word;}
 .ddbx-impact-att{position:absolute;left:0;right:0;top:9vh;display:flex;justify-content:center;}
 .ddbx-impact-focus{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);display:flex;flex-wrap:wrap;align-items:center;justify-content:center;gap:16px 32px;max-width:88vw;}
 .ddbx-tfoc{display:flex;flex-direction:column;align-items:center;}
-.ddbx-verdict{display:block;margin-top:9px;font-size:26px;font-weight:900;letter-spacing:.18em;text-shadow:0 2px 10px #000,0 0 18px currentColor;opacity:0;}
+.ddbx-verdict{display:block;margin-top:10px;font-size:32px;font-weight:900;letter-spacing:.18em;text-shadow:0 2px 10px #000,0 0 18px currentColor;opacity:0;}
 .ddbx-verdict.v-hit{color:#5fe07a;}
 .ddbx-verdict.v-miss{color:#ff6a6a;}
 .ddbx-tfoc.v-hit .ddbx-verdict,.ddbx-tfoc.v-miss .ddbx-verdict{animation:ddbx-reveal .55s cubic-bezier(.2,1.5,.4,1) both;}
 .ddbx-tfoc.v-hit{--c1:#4fd06a;--c2:rgba(79,208,106,.55);}
 .ddbx-tfoc.v-miss{--c1:#ff5b5b;--c2:rgba(255,91,91,.5);}
 .ddbx-tfoc.v-miss .ddbx-target{filter:grayscale(.5) brightness(.82);}
-.ddbx-cfhead{position:absolute;left:0;right:0;top:1vh;text-align:center;font-size:20px;letter-spacing:.14em;text-transform:uppercase;color:#fff;text-shadow:0 2px 10px #000;}
+.ddbx-cfhead{position:absolute;left:0;right:0;top:1vh;text-align:center;font-size:24px;letter-spacing:.14em;text-transform:uppercase;color:#fff;text-shadow:0 2px 10px #000;}
 .ddbx-cfhead b{color:#ffd76a;}
 .ddbx-vbtns{display:flex;gap:8px;margin-top:11px;pointer-events:auto;}
-.ddbx-vbtn{font:700 16px/1 var(--font-primary,'Signika',sans-serif);letter-spacing:.06em;text-transform:uppercase;padding:11px 17px;border-radius:9px;border:1.5px solid rgba(255,255,255,.3);background:rgba(0,0,0,.55);color:#cfcfcf;cursor:pointer;transition:background .12s,border-color .12s,color .12s;}
+.ddbx-vbtn{font:700 18px/1 var(--font-primary,'Signika',sans-serif);letter-spacing:.06em;text-transform:uppercase;padding:12px 20px;border-radius:9px;border:1.5px solid rgba(255,255,255,.3);background:rgba(0,0,0,.55);color:#cfcfcf;cursor:pointer;transition:background .12s,border-color .12s,color .12s;}
 .ddbx-vbtn:hover{border-color:#fff;color:#fff;}
 .ddbx-vbtn.hit.on{background:rgba(79,208,106,.92);border-color:#4fd06a;color:#08210d;}
 .ddbx-vbtn.miss.on{background:rgba(255,91,91,.92);border-color:#ff5b5b;color:#2a0808;}
-.ddbx-confirm-done{position:absolute;top:var(--ci-y,6vh);right:var(--ci-x,6vw);padding:11px 20px;border-radius:24px;background:rgba(79,208,106,.94);border:1.6px solid #6be27a;color:#06220c;font:800 15px/1 var(--font-primary,'Signika',sans-serif);letter-spacing:.05em;cursor:pointer;pointer-events:auto;z-index:31;transition:transform .12s,background .12s;}
+.ddbx-confirm-done{position:absolute;top:var(--ci-y,6vh);right:var(--ci-x,6vw);padding:13px 23px;border-radius:26px;background:rgba(79,208,106,.94);border:1.6px solid #6be27a;color:#06220c;font:800 17px/1 var(--font-primary,'Signika',sans-serif);letter-spacing:.05em;cursor:pointer;pointer-events:auto;z-index:31;transition:transform .12s,background .12s;}
 .ddbx-confirm-done:hover{transform:scale(1.05);background:#6be27a;}
-.ddbx-impact-focus.multi .ddbx-verdict{font-size:19px;margin-top:7px;}
-.ddbx-impact-focus.multi .ddbx-tname{font-size:18px;margin-top:9px;letter-spacing:.08em;}
-.ddbx-confirm .ddbx-tname{font-size:19px;}
+.ddbx-impact-focus.multi .ddbx-verdict{font-size:23px;margin-top:8px;}
+.ddbx-impact-focus.multi .ddbx-tname{font-size:21px;margin-top:10px;letter-spacing:.08em;}
+.ddbx-confirm .ddbx-tname{font-size:22px;}
 .lay-orbit .ddbx-impact-focus .ddbx-target{width:218px;height:218px;}
 .ddbx-impact-readout{position:absolute;left:0;right:0;bottom:13vh;display:flex;flex-direction:column;align-items:center;gap:6px;}
 .lay-orbit .ddbx-impact-readout .ddbx-result{font-size:120px;}
@@ -1359,7 +1359,9 @@ async function renderStinger(p) {
       const lab = `<div class="ddbx-rsub">${labTxt}</div>`;
       wrap.innerHTML = `<div class="ddbx-vig${isHit ? ' hit' : ''}"></div>${tex}${isHit ? `<div class="ddbx-flash"></div>${damageFx(dmgType)}` : frame}<div class="ddbx-content"><div class="ddbx-impact-att">${att}</div>${focus}<div class="ddbx-impact-readout">${num}${lab}</div></div>`;
       // Reveal the HIT/MISS verdict a BEAT AFTER the roll lands — add the class so the ring recolours + the label pops together.
-      setTimeout(() => { try { wrap.querySelectorAll('.ddbx-tfoc[data-v]').forEach(el => el.classList.add('v-' + el.dataset.v)); } catch (e) {} }, 1000);
+      // ~2s on the default duration; capped below the fade so it always shows even on a short cinematic-duration setting.
+      const vDelay = Math.min(2000, Math.max(500, cineMs() - 800));
+      setTimeout(() => { try { wrap.querySelectorAll('.ddbx-tfoc[data-v]').forEach(el => el.classList.add('v-' + el.dataset.v)); } catch (e) {} }, vDelay);
       if (isHit) { try { shakeScreen(p.heal ? 'soft' : ((p.total ?? 0) >= 25 ? 'hard' : 'med')); } catch (e) {} }
       // noPan: a conducted apply sequence owns the camera (zoom → pan target-to-target → zoom out); don't let the overlay also pan.
       if (!p.noPan) { try { panToImpactByActors(p.applyIds); } catch (e) {} }
@@ -1830,7 +1832,7 @@ Hooks.once('ready', () => {
       else if (m?.t === 'groupclear') clearGroupLocal();
     });
   } catch (e) {}
-  if (!game.user.isGM) { console.log('DDB Integrator | ready (v0.2.8)'); return; }
+  if (!game.user.isGM) { console.log('DDB Integrator | ready (v0.2.9)'); return; }
   window.DDBIntegrator = { reconnect, startOwnSocket, editMapping, editCookie, editSounds, fetchCampaignCharacters, startGroup, finalizeGroup, cancelGroup };
   // Replace/suppress Foundry's native dnd5e roll cards — this module posts its own. ONLY native ROLL cards are
   // touched (no item/usage interception, no automation): a GM roll renders our card too, then we keep the native
@@ -1881,5 +1883,5 @@ Hooks.once('ready', () => {
   // Insurance: force one scene-controls re-render now that everything is wired, in case the controls had already
   // painted. The top-level getSceneControlButtons hook is what makes the tools appear; this just guarantees a paint.
   try { ui.controls?.render?.(true); } catch (e) {}
-  console.log('DDB Integrator | ready (v0.2.8)');
+  console.log('DDB Integrator | ready (v0.2.9)');
 });

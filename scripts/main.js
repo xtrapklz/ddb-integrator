@@ -476,8 +476,12 @@ async function postPublic(c) {
   return ChatMessage.create({ speaker: speakerFor(c), content: publicCard(c), flags });
 }
 // --- Unified action card: ONE expanding card per action (attack + its damage), instead of separate cards. ---
-let _actionCards = new Map();   // key "actorId::action" -> { msgId, data, at, dmgCount, timer }
-function unifiedKey(card) { return (card.actorId || card.who || '?') + '::' + (card.action || '?'); }
+let _actionCards = new Map();   // key -> { msgId, data, at, dmgCount, timer }
+// Correlation key. PREFER dnd5e's real linkage: every roll triggered from an activity's card carries
+// flags.dnd5e.originatingMessage = that card's id (buildPost, dnd5e.mjs:68482), so an attack, its damage, and a save's
+// usage card all share ONE exact id — no time window, no same-name collision. DDB rolls carry no such link, so they fall
+// back to the old actorId::action key (still time-windowed in presentStylized).
+function unifiedKey(card) { return card.link ? ('link:' + card.link) : ((card.actorId || card.who || '?') + '::' + (card.action || '?')); }
 function hitForUuid(uuid) {
   try {
     if (!game.settings.get(NS, 'autoConfirmHits')) return null;   // verdict off → no auto hit/miss anywhere (manual confirm coming)
@@ -534,12 +538,14 @@ async function presentStylized(card) {
   const key = unifiedKey(card), now = Date.now();
   if (isDmg) {
     const rec = _actionCards.get(key);
-    if (rec && (now - rec.at) < 120000 && game.messages?.get?.(rec.msgId)) {
+    // An exact link key can't false-merge (unique per use), so it gets a generous window; the windowed DDB key keeps 2 min.
+    const win = card.link ? 600000 : 120000;
+    if (rec && (now - rec.at) < win && game.messages?.get?.(rec.msgId)) {
       addDmgToCard(rec.data, card, rec.dmgCount++); rec.at = now; scheduleCardUpdate(rec);
       return game.messages.get(rec.msgId);
     }
   }
-  const data = { who: card.who, action: card.action, actorId: card.actorId, actorImg: card.actorImg, img: card.img, kind: card.kind, targets: cardTargets(card), toHit: null, damage: null };
+  const data = { who: card.who, action: card.action, actorId: card.actorId, link: card.link || null, actorImg: card.actorImg, img: card.img, kind: card.kind, targets: cardTargets(card), toHit: null, damage: null };
   let dmgCount = 0;
   if (isAttack) data.toHit = { value: Math.max(0, Math.round(Number(card.total) || 0)) };
   else { addDmgToCard(data, card, 0); dmgCount = 1; }
@@ -565,7 +571,10 @@ function openSaveCard(message, info) {
     const concealRoller = respectVis() && tokenConcealed(_cTok);
     let item = null; try { item = message.flags?.dnd5e?.item?.uuid ? fromUuidSync(message.flags.dnd5e.item.uuid) : null; } catch (e) {}
     const action = item?.name || (message.flavor || '').split(' - ')[0].trim() || 'Saving Throw';
-    const key = (actorId || message.alias || '?') + '::' + action;
+    // Anchor by the usage card's OWN id: the damage roll fired from this card will carry originatingMessage = this id, so
+    // they correlate exactly (no reliance on matching the action name within a time window).
+    const link = message.id || null;
+    const key = unifiedKey({ link, actorId, who: message.alias, action });
     const now = Date.now();
     const save = { dc: info.dc ?? null, ability: info.ability || '' };
     const targets = cardTargets({ targets: captureTargets() });
@@ -576,7 +585,7 @@ function openSaveCard(message, info) {
       rec.data.save = save; rec.data.kind = 'save'; if (targets.length) rec.data.targets = targets; rec.at = now; scheduleCardUpdate(rec);
       return;
     }
-    const data = { who: concealRoller ? 'Unknown' : (actor?.name || message.alias || ''), action, actorId, concealRoller, actorImg: concealRoller ? MYSTERY : (actor?.img || ''), img: item?.img || '', kind: 'save', targets, toHit: null, save, damage: null };
+    const data = { who: concealRoller ? 'Unknown' : (actor?.name || message.alias || ''), action, actorId, link, concealRoller, actorImg: concealRoller ? MYSTERY : (actor?.img || ''), img: item?.img || '', kind: 'save', targets, toHit: null, save, damage: null };
     ChatMessage.create({ speaker: speakerFor(data), content: publicCard(data), flags: { [NS]: { card: true, cardData: data } } })
       .then(msg => { if (msg) _actionCards.set(key, { msgId: msg.id, data, at: now, dmgCount: 0, timer: null }); })
       .catch(() => {});
@@ -606,6 +615,7 @@ async function present(p) {
     const concealRoller = !!p.concealRoller;
     const card = {
       who: concealRoller ? 'Unknown' : p.who, action: p.action, actorId: actor?.id || null, concealRoller,
+      link: p.link || null,   // dnd5e originatingMessage id → exact attack↔damage correlation (null for DDB → windowed key)
       kind: p.kind, heal: !!p.heal, ability: p.ability || null,
       total: Number(p.total) || 0, nat: p.nat ?? null, advKind: p.advKind || '',
       damageType: p.damageType || '', damageTypes: p.damageTypes || [], damageParts: p.damageParts || null,
@@ -839,6 +849,9 @@ function renderLocalMessage(message, keepNative) {
   let _rTok = null;
   try { const scn = message.speaker?.scene ? game.scenes.get(message.speaker.scene) : canvas.scene; _rTok = message.speaker?.token ? (scn?.tokens?.get(message.speaker.token)?.object || canvas.tokens?.get?.(message.speaker.token)) : (actor?.getActiveTokens?.()?.[0] || null); } catch (e) {}
   const concealRoller = respectVis() && tokenConcealed(_rTok);
+  // dnd5e stamps every roll triggered from an activity card with the card's id — the exact link between an attack and its
+  // damage (and a save's usage card), immune to same-name collisions and slow-combat staleness. Absent → fall back to the window.
+  const link = f.originatingMessage || null;
   let item = null; try { item = f.item?.uuid ? fromUuidSync(f.item.uuid) : null; } catch (e) {}
   const action = item?.name || (message.flavor || '').split(' - ')[0].trim() || rtype || 'Roll';
   const who = actor?.name || message.alias || action;
@@ -875,7 +888,7 @@ function renderLocalMessage(message, keepNative) {
   const dmgParts = (kind === 'damage' && !healFlag) ? damagePartsFromRolls(message.rolls) : null;
   const total = (dmgParts && dmgParts.length) ? dmgParts.reduce((s, p) => s + p.value, 0) : Number(roll.total ?? 0);
   present({
-    who, action: label, actorId: actor?.id || null, concealRoller,
+    who, action: label, actorId: actor?.id || null, concealRoller, link,
     kind, heal: healFlag, ability: (kind === 'check' || kind === 'save') ? ability : null,
     total, nat,
     damageType: ctx.damageType, damageTypes: ctx.damageTypes, damageParts: dmgParts && dmgParts.length ? dmgParts : undefined,
@@ -2115,7 +2128,7 @@ Hooks.once('ready', () => {
       else if (m?.t === 'groupclear') clearGroupLocal();
     });
   } catch (e) {}
-  if (!game.user.isGM) { console.log('DDB Integrator | ready (v0.2.22)'); return; }
+  if (!game.user.isGM) { console.log('DDB Integrator | ready (v0.2.23)'); return; }
   window.DDBIntegrator = { reconnect, startOwnSocket, editMapping, editCookie, editSounds, fetchCampaignCharacters, startGroup, finalizeGroup, cancelGroup };
   // Replace/suppress Foundry's native dnd5e roll cards — this module posts its own. ONLY native ROLL cards are
   // touched (no item/usage interception, no automation): a GM roll renders our card too, then we keep the native
@@ -2178,13 +2191,14 @@ Hooks.once('ready', () => {
   setInterval(() => {
     const now = Date.now();
     for (const [k, t] of seen) if (t < now - 60000) seen.delete(k);
-    // Prune stale action-card correlations (reads already ignore anything older than 120s) + clear their pending timers.
-    for (const [k, rec] of _actionCards) if (now - (rec?.at || 0) > 300000) { try { clearTimeout(rec.timer); } catch (e) {} _actionCards.delete(k); }
+    // Prune stale action-card correlations + clear their pending timers. 15 min covers the link key's 10-min match window
+    // (an exact-id rec is safe to keep that long); windowed reads still ignore anything older than 2 min.
+    for (const [k, rec] of _actionCards) if (now - (rec?.at || 0) > 900000) { try { clearTimeout(rec.timer); } catch (e) {} _actionCards.delete(k); }
     // Bound the dedupe Sets so they can't grow for the whole session.
     capSet(_autoApplied, 1000); capSet(_seededTrays, 1000);
   }, 10000);
   // Insurance: force one scene-controls re-render now that everything is wired, in case the controls had already
   // painted. The top-level getSceneControlButtons hook is what makes the tools appear; this just guarantees a paint.
   try { ui.controls?.render?.(true); } catch (e) {}
-  console.log('DDB Integrator | ready (v0.2.22)');
+  console.log('DDB Integrator | ready (v0.2.23)');
 });

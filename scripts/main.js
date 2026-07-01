@@ -1221,14 +1221,15 @@ function panToTokens(toks, duration = 480, pad = 2.6) {
 }
 function storePreImpactView() { try { if (canvas?.ready && !_preImpactView) _preImpactView = { x: canvas.stage.pivot.x, y: canvas.stage.pivot.y, scale: canvas.stage.scale.x }; } catch (e) {} }
 function clearPreImpactView() { _preImpactView = null; }
-// Single-shot impact pan (the ATTACK roll-time impact): zoom to the targets, auto-restore the prior view shortly after.
-function panToImpactByActors(ids) {
+// Single-shot impact pan (the ATTACK roll-time impact): zoom to the targets, then restore the prior view when the cinematic
+// fades. restoreMs = the impact's total duration, so the zoom-out stays in sequence with the reveal + hold (not mid-way).
+function panToImpactByActors(ids, restoreMs) {
   try {
     const toks = resolveTokens(ids); if (!toks.length) return;
     storePreImpactView();
     panToTokens(toks);
     clearTimeout(_restoreTimer);
-    _restoreTimer = setTimeout(() => { try { if (_preImpactView) { canvas.animatePan({ ..._preImpactView, duration: 620 }); _preImpactView = null; } } catch (e) {} }, Math.max(1400, cineMs()));
+    _restoreTimer = setTimeout(() => { try { if (_preImpactView) { canvas.animatePan({ ..._preImpactView, duration: 620 }); _preImpactView = null; } } catch (e) {} }, Math.max(1400, restoreMs || cineMs()));
   } catch (e) {}
 }
 // Briefly shake Foundry's game board for an impact (a CSS transform burst — no data change).
@@ -1295,7 +1296,6 @@ function fitCinematic(wrap) {
 // clear of it — the ✕ shouldn't get buried when the chat opens mid-cinematic.
 Hooks.on('collapseSidebar', () => { try { document.querySelectorAll('.ddbx-sting').forEach(el => fitCinematic(el)); } catch (e) {} });
 // Cinematics are SERIALIZED through a queue so a new one can never render on top of one already on screen.
-const VERDICT_DELAY = 3000;   // beat before the attack HIT/MISS reveals; the impact then holds for the duration setting AFTER it
 let _stQ = [], _stBusy = false;
 function playStinger(p) { try { if (!p) return; if (GroupRoll.active && game.user?.isGM) return; if (_confirmEl) return; _stQ.push(p); pumpStingers(); } catch (e) {} }
 // Single-roll cinematic on-screen time (ms), from the GM-set "Cinematic duration" setting. Clamped to a sane floor.
@@ -1360,13 +1360,14 @@ async function renderStinger(p) {
       const labTxt = p.heal ? 'healing' : isHit ? `${esc(p.dtype || '')} damage`.trim() : esc(p.action || 'attack');
       const lab = `<div class="ddbx-rsub">${labTxt}</div>`;
       wrap.innerHTML = `<div class="ddbx-vig${isHit ? ' hit' : ''}"></div><div class="ddbx-scrim"></div>${tex}${isHit ? `<div class="ddbx-flash"></div>${damageFx(dmgType)}` : frame}<div class="ddbx-content"><div class="ddbx-impact-att">${att}</div>${focus}<div class="ddbx-impact-readout">${num}${lab}</div></div>`;
-      // Reveal the HIT/MISS verdict a BEAT AFTER the roll lands — add the class so the ring recolours + the label pops together.
-      // The payload's dur already reserves VERDICT_DELAY + the duration setting, so the reveal always lands before the fade.
-      const vDelay = VERDICT_DELAY;
+      // Reveal the HIT/MISS verdict after the FULL duration setting; the payload's dur = 2× duration, so it then holds for
+      // another full duration before fading. Reveal = ring recolour + label pop together.
+      const vDelay = cineMs();
       setTimeout(() => { try { wrap.querySelectorAll('.ddbx-tfoc[data-v]').forEach(el => el.classList.add('v-' + el.dataset.v)); } catch (e) {} }, vDelay);
       if (isHit) { try { shakeScreen(p.heal ? 'soft' : ((p.total ?? 0) >= 25 ? 'hard' : 'med')); } catch (e) {} }
-      // noPan: a conducted apply sequence owns the camera (zoom → pan target-to-target → zoom out); don't let the overlay also pan.
-      if (!p.noPan) { try { panToImpactByActors(p.applyIds); } catch (e) {} }
+      // noPan: a conducted apply sequence owns the camera. Otherwise zoom to the targets and STAY zoomed for the whole
+      // cinematic — restore (zoom out) only when it fades (dur), so the camera is in sequence with the reveal + hold.
+      if (!p.noPan) { try { panToImpactByActors(p.applyIds, dur); } catch (e) {} }
     } else {
       // Action-art sub-circle riding the roller portrait (only for real action art, never the check d20/crest placeholder).
       const actionBadge = (p.img && !p.crest) ? `<span class="ddbx-actbadge" style="background-image:url('${cleanUrl(p.img)}')"></span>` : '';
@@ -1426,7 +1427,7 @@ function announce(card) {
         targets: tgtsP,
         applyIds: (card.targets || []).map(t => t && t.id).filter(Boolean),   // ALL target ids → camera frames them all (read-only)
         cue: isDmg ? ('dmg.' + dmgKey(dtype)) : (nat === 20 ? 'crit' : nat === 1 ? 'fumble' : 'roll'),
-        dur: hasVerdict ? (VERDICT_DELAY + cineMs()) : undefined,   // reveal at VERDICT_DELAY, then stay for the full setting duration
+        dur: hasVerdict ? (2 * cineMs()) : undefined,   // reveal at the full duration, then hold ANOTHER full duration
       };
       playStinger(payload);
       try { game.socket?.emit(`module.${NS}`, { t: 'stinger', payload }); } catch (e) {}
@@ -1649,7 +1650,7 @@ function resolveConfirm() {
         targets: Array.from(hits, ([uuid, t]) => ({ name: t.name, img: t.img, hit: t.hit })),
         applyIds: (card.targets || []).map(t => t && t.id).filter(Boolean),
         cue: card.nat === 20 ? 'crit' : card.nat === 1 ? 'fumble' : 'roll',
-        dur: VERDICT_DELAY + cineMs(),   // same staged reveal + full-duration hold as the auto verdict
+        dur: 2 * cineMs(),   // same staged reveal + full-duration hold as the auto verdict
       };
       playStinger(payload); try { game.socket?.emit(`module.${NS}`, { t: 'stinger', payload }); } catch (e) {}
     } catch (e) {}
@@ -1838,7 +1839,7 @@ Hooks.once('ready', () => {
       else if (m?.t === 'groupclear') clearGroupLocal();
     });
   } catch (e) {}
-  if (!game.user.isGM) { console.log('DDB Integrator | ready (v0.2.10)'); return; }
+  if (!game.user.isGM) { console.log('DDB Integrator | ready (v0.2.11)'); return; }
   window.DDBIntegrator = { reconnect, startOwnSocket, editMapping, editCookie, editSounds, fetchCampaignCharacters, startGroup, finalizeGroup, cancelGroup };
   // Replace/suppress Foundry's native dnd5e roll cards — this module posts its own. ONLY native ROLL cards are
   // touched (no item/usage interception, no automation): a GM roll renders our card too, then we keep the native
@@ -1889,5 +1890,5 @@ Hooks.once('ready', () => {
   // Insurance: force one scene-controls re-render now that everything is wired, in case the controls had already
   // painted. The top-level getSceneControlButtons hook is what makes the tools appear; this just guarantees a paint.
   try { ui.controls?.render?.(true); } catch (e) {}
-  console.log('DDB Integrator | ready (v0.2.10)');
+  console.log('DDB Integrator | ready (v0.2.11)');
 });

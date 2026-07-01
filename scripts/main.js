@@ -95,7 +95,9 @@ const STYLES = `
 .ddbx-st-fade{animation:ddbx-st-fade var(--dur,3500ms) ease forwards;}
 .ddbx-group.is-gathering{animation:none!important;opacity:1!important;}
 /* GM-only close control. The cinematic root is pointer-events:none, so this button re-enables pointer events on itself. */
-.ddbx-close{position:absolute;top:var(--ci-y,6vh);right:var(--ci-x,6vw);width:40px;height:40px;border-radius:50%;background:rgba(0,0,0,.6);border:1.6px solid rgba(255,255,255,.5);color:#fff;font:700 18px/37px system-ui,Arial,sans-serif;text-align:center;cursor:pointer;pointer-events:auto;z-index:30;transition:background .15s,border-color .15s,transform .12s;}
+/* ✕ lives top-LEFT: the cinematic sits BELOW the UI in z-order, so a top-right ✕ gets buried by the chat drawer / sidebar
+   (which live on the right). The left edge only has the thin scene-controls bar, which the --ci-x inset clears. */
+.ddbx-close{position:absolute;top:var(--ci-y,6vh);left:var(--ci-x,6vw);width:46px;height:46px;border-radius:50%;background:rgba(0,0,0,.66);border:1.7px solid rgba(255,255,255,.6);color:#fff;font:700 21px/43px system-ui,Arial,sans-serif;text-align:center;cursor:pointer;pointer-events:auto;z-index:30;box-shadow:0 2px 14px rgba(0,0,0,.6);transition:background .15s,border-color .15s,transform .12s;}
 .ddbx-close:hover{background:rgba(0,0,0,.85);border-color:#fff;transform:scale(1.08);}
 .ddbx-critflash{position:absolute;inset:0;pointer-events:none;background:radial-gradient(circle at 50% 45%, color-mix(in srgb,var(--c1) 65%,transparent), transparent 62%);opacity:0;animation:ddbx-critflash 1.1s ease-out;}
 @keyframes ddbx-critflash{0%{opacity:0;}12%{opacity:1;}40%{opacity:.25;}60%{opacity:.7;}100%{opacity:0;}}
@@ -1555,7 +1557,7 @@ async function renderStinger(p) {
       wrap.innerHTML = `${p.crest ? crestBg : bgEl}<div class="ddbx-vig"></div><div class="ddbx-scrim"></div>${tex}${critFx}${frame}<div class="ddbx-pts">${particles}</div><div class="ddbx-content"><div class="ddbx-stage">${caster}${center}</div></div>`;
     }
     // GM-only ✕ to dismiss this reveal early (the cinematic root is click-through; the button re-enables its own clicks).
-    if (game.user?.isGM) wrap.insertAdjacentHTML('beforeend', '<div class="ddbx-close" title="Dismiss">✕</div>');
+    if (game.user?.isGM) wrap.insertAdjacentHTML('beforeend', '<div class="ddbx-close" title="Dismiss (Esc)">✕</div>');
     // Render just ABOVE the canvas but BELOW the UI: insert right after #board so the map is covered dramatically
     // while chat/toolbar stay on top and interactive.
     const board = document.getElementById('board');
@@ -1770,7 +1772,7 @@ function renderGroup(p) {
     for (let i = 0; i < N; i++) { const x = (Math.random() * 100).toFixed(1); const dl = (Math.random() * 1.8).toFixed(2); const du = (1.6 + Math.random() * 1.9).toFixed(2); const sz = (2 + Math.random() * 5).toFixed(1); const sway = Math.round(Math.random() * 50 - 25); const spark = i % 4 === 0 ? ' spark' : ''; particles += `<span class="ddbx-pt${spark}" style="left:${x}%;--sway:${sway}px;width:${sz}px;height:${sz}px;animation-delay:${dl}s;animation-duration:${du}s;"></span>`; }
     wrap.innerHTML = `<div class="ddbx-vig"></div><div class="ddbx-tex"></div><div class="ddbx-radial"></div><div class="ddbx-pts">${particles}</div><div class="ddbx-content"><div class="ddbx-ghead">${groupHead(p)}</div><div class="ddbx-gtiles">${tilesHTML}</div></div>`;
     // GM-only ✕ to reveal the result now (Group Check / Contest) or end the Initiative gather. Persists across in-place updates.
-    if (game.user?.isGM && p.phase !== 'result') wrap.insertAdjacentHTML('beforeend', '<div class="ddbx-close" title="Reveal / end">✕</div>');
+    if (game.user?.isGM && p.phase !== 'result') wrap.insertAdjacentHTML('beforeend', '<div class="ddbx-close" title="Reveal / end (Esc)">✕</div>');
     // While gathering, hold opacity steady (no auto-fade); the result phase uses the standard fade-out animation.
     if (p.phase !== 'result') wrap.style.animation = 'none';
     const board = document.getElementById('board');
@@ -2056,7 +2058,7 @@ Hooks.once('ready', () => {
       else if (m?.t === 'groupclear') clearGroupLocal();
     });
   } catch (e) {}
-  if (!game.user.isGM) { console.log('DDB Integrator | ready (v0.2.15)'); return; }
+  if (!game.user.isGM) { console.log('DDB Integrator | ready (v0.2.19)'); return; }
   window.DDBIntegrator = { reconnect, startOwnSocket, editMapping, editCookie, editSounds, fetchCampaignCharacters, startGroup, finalizeGroup, cancelGroup };
   // Replace/suppress Foundry's native dnd5e roll cards — this module posts its own. ONLY native ROLL cards are
   // touched (no item/usage interception, no automation): a GM roll renders our card too, then we keep the native
@@ -2098,14 +2100,27 @@ Hooks.once('ready', () => {
       const wrap = x.closest('.ddbx-sting'); if (wrap) wrap.remove();
     } catch (e) {}
   }, true);
-  // NOTE: no Escape-to-cancel — Escape is heavily overloaded in Foundry (closing sheets, roll-config dialogs,
-  // deselecting tokens), so binding it here silently killed live sessions mid-roll. Cancel via right-click on the
-  // tool, or finalize by clicking the tool again.
+  // Escape ALSO dismisses a cinematic (GM only) — mirrors the ✕. Guarded so it doesn't hijack Escape from the rest of
+  // Foundry (the reason it was unbound before): we ONLY act when a cinematic/overlay of ours is actually on screen AND the
+  // GM isn't focused in a field or an app window (sheets, roll-config, dialogs keep their own Escape). A gather finalizes
+  // (reveal), a single reveal / confirm overlay is dismissed — same as clicking the ✕, never a silent discard.
+  document.addEventListener('keydown', (ev) => {
+    try {
+      if (ev.key !== 'Escape' || ev.repeat || !game.user?.isGM) return;
+      const showing = document.querySelector('.ddbx-sting') || _confirmEl;
+      if (!showing) return;   // nothing of ours on screen → let Foundry have Escape
+      if (ev.target?.closest?.('input,textarea,select,[contenteditable=""],[contenteditable="true"],.window-app,.application,.dialog')) return;   // defer to a focused sheet/field
+      ev.preventDefault(); ev.stopPropagation();
+      if (GroupRoll.active) { finalizeGroup(); return; }               // live gather → reveal the result
+      if (_confirmEl) { closeConfirm(); return; }                       // GM hit/miss confirm → dismiss
+      document.querySelectorAll('.ddbx-sting').forEach(el => { try { el.remove(); } catch (e) {} });   // single reveal(s) → dismiss
+    } catch (e) {}
+  }, true);
   // Standalone: we always own the connection.
   startOwnSocket();
   setInterval(() => { const sc = Date.now() - 60000; for (const [k, t] of seen) if (t < sc) seen.delete(k); }, 10000);
   // Insurance: force one scene-controls re-render now that everything is wired, in case the controls had already
   // painted. The top-level getSceneControlButtons hook is what makes the tools appear; this just guarantees a paint.
   try { ui.controls?.render?.(true); } catch (e) {}
-  console.log('DDB Integrator | ready (v0.2.15)');
+  console.log('DDB Integrator | ready (v0.2.19)');
 });

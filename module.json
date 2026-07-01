@@ -1,11 +1,11 @@
 {
   "id": "ddb-integrator",
   "title": "DDB Integrator",
-  "version": "0.2.15",
+  "version": "0.2.16",
   "url": "https://github.com/xtrapklz/ddb-integrator",
   "manifest": "https://github.com/xtrapklz/ddb-integrator/releases/latest/download/module.json",
   "download": "https://github.com/xtrapklz/ddb-integrator/releases/latest/download/module.zip",
-  "description": "Brings your D&D Beyond dice rolls into Foundry VTT as one unified, cinematic chat card — and gives rolls made inside Foundry the same polish. Pure roll integration and presentation: no automation, no targeting, just every roll shown beautifully, with optional full-screen cinematics and your own sound effects on a handful of key moments. Connects to the D&D Beyond game log on its own via a ddb-proxy (no MidiQOL or other modules required).",
+  "description": "Brings your D&D Beyond dice rolls into Foundry VTT as one unified, cinematic chat card — and gives rolls made inside Foundry the same polish. Attacks, damage, saves, checks and initiative each resolve on a single expanding card with optional full-screen cinematics, hit/miss and pass/fail call-outs, and group-roll gathers. Targeting-aware: attacks light up their targets and damage pre-selects the matching tray multipliers, with GM-only automation (confirm vs AC, save-based multipliers, auto-apply) that stays off by default. Bring your own sound effects — ships silent. Connects to the D&D Beyond game log on its own via a ddb-proxy (no MidiQOL or other modules required).",
   "authors": [
     {
       "name": "XtraPklz",

@@ -1123,7 +1123,8 @@ Hooks.on('createChatMessage', autoApplyDamage);
 // the native save button in the card (data-type="save" / data-dc / data-ability) — pure detection, we don't touch the card.
 function saveCardInfo(message) {
   try {
-    if (message.flags?.[NS]?.card) return null;   // our stylized card, not a native save card
+    if (message.flags?.[NS]?.card) return null;         // our stylized card, not a native save card
+    if (message.flags?.dnd5e?.roll?.type) return null;  // a ROLL card (damage/save/attack) — only the action-USE card arms a gather
     const c = String(message.content || '');
     if (!/data-(?:type="save"|action="rollSave")/.test(c)) return null;
     const dcM = /data-dc="(\d+)"/.exec(c), abM = /data-ability="([a-z|]+)"/.exec(c);
@@ -1151,6 +1152,8 @@ document.addEventListener('click', ev => {
     const dc = parseInt(el.dataset.dc); const ability = String(el.dataset.ability || '').split('|')[0];
     if (!ability) return;
     ev.stopImmediatePropagation(); ev.preventDefault();   // take over — roll the TARGETED tokens' saves instead of the selected
+    // Remember who was asked to save, so the gather can auto-resolve once all of them have submitted.
+    if (GroupRoll.active && GroupRoll.mode === 'save') GroupRoll.saveTargets = new Set([...game.user.targets].map(t => t?.actor?.uuid).filter(Boolean));
     for (const token of game.user.targets) {
       const actor = token?.actor; if (!actor?.rollSavingThrow) continue;
       try { actor.rollSavingThrow({ event: ev, ability, target: Number.isFinite(dc) ? dc : undefined }); } catch (e) {}
@@ -1573,6 +1576,23 @@ function scheduleInitClose() {
 Hooks.on('combatStart', () => { try { scheduleInitClose(); } catch (e) {} });
 Hooks.on('updateCombat', (combat, changed) => { try { if (changed?.round != null) scheduleInitClose(); } catch (e) {} });
 Hooks.on('updateCombatant', (c, changed) => { try { if (changed?.initiative != null && allPlayersHaveInit()) scheduleInitClose(); } catch (e) {} });
+// Auto-resolve a Group Save once every TARGETED token that was asked to save has submitted one (like the init auto-close).
+function allSavesIn() {
+  try {
+    if (GroupRoll.mode !== 'save' || !(GroupRoll.saveTargets?.size)) return false;
+    const have = new Set([...GroupRoll.entries.values()].filter(e => e.total != null && e.uuid).map(e => e.uuid));
+    return [...GroupRoll.saveTargets].every(u => have.has(u));
+  } catch (e) { return false; }
+}
+function scheduleSaveClose() {
+  try {
+    if (!game.user?.isGM || !GroupRoll.active || GroupRoll.mode !== 'save' || GroupRoll.saveCloseTimer) return;
+    GroupRoll.saveCloseTimer = setTimeout(() => {
+      GroupRoll.saveCloseTimer = null;
+      if (GroupRoll.active && GroupRoll.mode === 'save') finalizeGroup();
+    }, Math.max(1200, Math.round(cineMs() * 0.6)));   // a beat after the last save, then reveal the pass/fail tally
+  } catch (e) {}
+}
 
 // Refresh the GM toolbar so the active tool reflects the live session state (toggled on/off).
 function refreshGroupControls() { try { ui.controls?.render?.(true); } catch (e) {} }
@@ -1780,6 +1800,7 @@ function startGroup(mode) {
   GroupRoll.active = true; GroupRoll.mode = mode; GroupRoll.entries.clear(); GroupRoll.startedAt = now;
   clearTimeout(GroupRoll.initCloseTimer); GroupRoll.initCloseTimer = null;   // fresh session — drop any pending init auto-close
   GroupRoll.saveDC = null; GroupRoll.saveAbility = null;   // a save gather's DC is set by the auto-arm (from the save card) if known
+  GroupRoll.saveTargets = null; clearTimeout(GroupRoll.saveCloseTimer); GroupRoll.saveCloseTimer = null;
   // Clear any in-flight / queued single-roll cinematics so none linger and overlay the group cinematic.
   try { _stQ.length = 0; _stBusy = false; document.querySelectorAll('.ddbx-sting:not(.ddbx-group)').forEach(el => el.remove()); } catch (e) {}
   clearTimeout(_groupFinalizeTimer); _groupFinalizeTimer = null;
@@ -1811,12 +1832,14 @@ function ingestGroupRoll(info) {
       uuid: info.uuid || prev.uuid || null,
     });
     broadcastGroup('gathering');
+    if (allSavesIn()) scheduleSaveClose();   // every targeted token has saved → auto-resolve after a beat
   } catch (e) { console.warn('DDB Integrator | ingestGroupRoll', e); }
 }
 // GM: FINALIZE — compute the headline (average / winner), reveal it, then fade + clear after ~3.5s. Untoggles the tool.
 function finalizeGroup() {
   if (!game.user?.isGM || !GroupRoll.active) return;
   clearTimeout(GroupRoll.initCloseTimer); GroupRoll.initCloseTimer = null;   // we're resolving now — cancel any pending auto-close
+  clearTimeout(GroupRoll.saveCloseTimer); GroupRoll.saveCloseTimer = null;
   const mode = GroupRoll.mode;
   const entries = Array.from(GroupRoll.entries.values()).filter(e => e.total != null);
   let headline = '';

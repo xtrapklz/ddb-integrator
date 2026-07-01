@@ -77,7 +77,8 @@ const STYLES = `
 .ddbx2-pc-pill.dtype{background:rgba(224,130,77,.2);color:var(--coral-text);box-shadow:inset 0 0 0 1px rgba(224,130,77,.45);text-transform:capitalize;}
 .ddbx2-pc-pill.applied{background:rgba(255,180,60,.22);color:#ffce6a;box-shadow:inset 0 0 0 1px rgba(255,180,60,.5);}
 /* --- Cinematic stinger (orbit layout, result/declare only) --- */
-.ddbx-sting{position:fixed;inset:0;z-index:auto;pointer-events:none;overflow:hidden;font-family:'Modesto Condensed','Signika',serif;--ddbx-portbg:radial-gradient(circle at 50% 34%,#41435a,#15151d);}
+.ddbx-sting{position:fixed;inset:0;z-index:auto;pointer-events:none;overflow:hidden;font-family:'Modesto Condensed','Signika',serif;--ddbx-portbg:radial-gradient(circle at 50% 34%,#41435a,#15151d);--ci-x:6vw;--ci-y:6vh;}
+.ddbx-content{position:absolute;inset:var(--ci-y,6vh) var(--ci-x,6vw);pointer-events:none;}
 @keyframes ddbx-st-fade{0%{opacity:0;}6%{opacity:1;}85%{opacity:1;}100%{opacity:0;}}
 /* The auto-fade is OPT-IN: only elements tagged .ddbx-st-fade fade out (single-roll stingers + the finalized group
    RESULT). The GATHERING Group Check / Contest cinematic deliberately omits it, so there is no fade to fight — it
@@ -85,7 +86,7 @@ const STYLES = `
 .ddbx-st-fade{animation:ddbx-st-fade var(--dur,3500ms) ease forwards;}
 .ddbx-group.is-gathering{animation:none!important;opacity:1!important;}
 /* GM-only close control. The cinematic root is pointer-events:none, so this button re-enables pointer events on itself. */
-.ddbx-close{position:absolute;top:max(14px,3vh);right:max(18px,2vw);width:38px;height:38px;border-radius:50%;background:rgba(0,0,0,.55);border:1.6px solid rgba(255,255,255,.45);color:#fff;font:700 18px/35px system-ui,Arial,sans-serif;text-align:center;cursor:pointer;pointer-events:auto;z-index:30;transition:background .15s,border-color .15s,transform .12s;}
+.ddbx-close{position:absolute;top:var(--ci-y,6vh);right:var(--ci-x,6vw);width:40px;height:40px;border-radius:50%;background:rgba(0,0,0,.6);border:1.6px solid rgba(255,255,255,.5);color:#fff;font:700 18px/37px system-ui,Arial,sans-serif;text-align:center;cursor:pointer;pointer-events:auto;z-index:30;transition:background .15s,border-color .15s,transform .12s;}
 .ddbx-close:hover{background:rgba(0,0,0,.85);border-color:#fff;transform:scale(1.08);}
 .ddbx-critflash{position:absolute;inset:0;pointer-events:none;background:radial-gradient(circle at 50% 45%, color-mix(in srgb,var(--c1) 65%,transparent), transparent 62%);opacity:0;animation:ddbx-critflash 1.1s ease-out;}
 @keyframes ddbx-critflash{0%{opacity:0;}12%{opacity:1;}40%{opacity:.25;}60%{opacity:.7;}100%{opacity:0;}}
@@ -458,7 +459,9 @@ async function presentStylized(card) {
 async function present(p) {
   try {
     const actor = p.actorId ? game.actors.get(p.actorId) : (p.who ? actorByName(p.who) : null);
-    const targets = captureTargets();   // ALL currently-targeted tokens (presentation only)
+    // ONLY attacks + damage have targets. Initiative, saves, and skill checks are reports on the ACTOR's own roll — they
+    // never target anyone, so ignore whatever token happens to be selected (a Contest / Group Check gathers rollers, not targets).
+    const targets = (p.kind === 'attack' || p.kind === 'damage') ? captureTargets() : [];   // presentation only
     const card = {
       who: p.who, action: p.action, actorId: actor?.id || null,
       kind: p.kind, heal: !!p.heal, ability: p.ability || null,
@@ -1230,7 +1233,10 @@ function uiSafeRect() {
     const shown = el => { if (!el) return false; try { const cs = getComputedStyle(el); if (cs.display === 'none' || cs.visibility === 'hidden' || Number(cs.opacity) === 0) return false; } catch (e) {} const r = el.getBoundingClientRect(); return r.width > 4 && r.height > 4; };
     const pick = (...ids) => { for (const id of ids) { const el = document.getElementById(id); if (shown(el)) return el.getBoundingClientRect(); } return null; };
     const L = pick('ui-left', 'controls');                 // left scene controls
-    const R = pick('ui-right', 'sidebar');                  // right sidebar
+    // Right sidebar / chat drawer — the LEFTMOST right-hugging visible panel (skins vary in id; a chat popout can sit
+    // further left than the rail, and that's the edge we must clear so the ✕ isn't buried under it).
+    let R = null;
+    for (const id of ['ui-right', 'sidebar', 'chat', 'chat-notifications', 'chat-popout']) { const el = document.getElementById(id); if (shown(el)) { const r = el.getBoundingClientRect(); if (r.right >= vw - 4 && (!R || r.left < R.left)) R = r; } }
     const B = pick('ui-bottom', 'hotbar');                  // bottom hotbar / players
     const T = pick('navigation', 'ui-top', 'scene-navigation'); // top scene nav
     // Inset only from the edge each panel hugs (the chrome lines the viewport sides).
@@ -1241,13 +1247,7 @@ function uiSafeRect() {
   } catch (e) {}
   // Guard against a degenerate/inverted rect (e.g. chrome that fills the screen) → fall back to the full viewport.
   if (!(right - left > 80) || !(bottom - top > 80)) { left = 0; top = 0; right = vw; bottom = vh; }
-  // Extra perimeter breathing room for UI SKINS + modules we can't detect by id (e.g. Combat Carousel across the top).
-  // Pulls the WHOLE cinematic inward off the screen edges — attacker portrait, readouts, AND the ✕ — so nothing hugs the
-  // chrome. The top gets the most (that's where carousels + the attacker portrait sit).
-  const mx = Math.max(22, Math.round(vw * 0.035)), mt = Math.max(30, Math.round(vh * 0.065)), mb = Math.max(22, Math.round(vh * 0.045));
-  left += mx; right -= mx; top += mt; bottom -= mb;
-  if (!(right - left > 80) || !(bottom - top > 80)) return { left: 0, top: 0, width: vw, height: vh };
-  return { left, top, width: right - left, height: bottom - top };
+  return { left, top, width: right - left, height: bottom - top };   // the BACKGROUND fills this; content is inset separately (--ci-*)
 }
 // Pin a cinematic wrap into the UI-safe canvas rectangle. The wrap is inserted right after #board (a possibly
 // transformed/contained block), so we measure its own offset and correct for it — the same trick the single-roll
@@ -1267,6 +1267,9 @@ function fitCinematic(wrap) {
     try { wrap.style.left = '0px'; wrap.style.top = '0px'; wrap.style.width = '100vw'; wrap.style.height = '100vh'; } catch (e2) {}
   }
 }
+// Re-fit any on-screen cinematic when the sidebar / chat drawer toggles, so a persistent one (Group / Initiative) stays
+// clear of it — the ✕ shouldn't get buried when the chat opens mid-cinematic.
+Hooks.on('collapseSidebar', () => { try { document.querySelectorAll('.ddbx-sting').forEach(el => fitCinematic(el)); } catch (e) {} });
 // Cinematics are SERIALIZED through a queue so a new one can never render on top of one already on screen.
 let _stQ = [], _stBusy = false;
 function playStinger(p) { try { if (!p) return; if (GroupRoll.active && game.user?.isGM) return; _stQ.push(p); pumpStingers(); } catch (e) {} }
@@ -1330,7 +1333,7 @@ async function renderStinger(p) {
       const num = (p.total != null) ? `<div class="ddbx-result dmgnum">${esc(p.total)}</div>` : '';
       const labTxt = p.heal ? 'healing' : isHit ? `${esc(p.dtype || '')} damage`.trim() : esc(p.action || 'attack');
       const lab = `<div class="ddbx-rsub">${labTxt}</div>`;
-      wrap.innerHTML = `<div class="ddbx-vig${isHit ? ' hit' : ''}"></div>${tex}${isHit ? `<div class="ddbx-flash"></div>${damageFx(dmgType)}` : frame}<div class="ddbx-impact-att">${att}</div>${focus}<div class="ddbx-impact-readout">${num}${lab}</div>`;
+      wrap.innerHTML = `<div class="ddbx-vig${isHit ? ' hit' : ''}"></div>${tex}${isHit ? `<div class="ddbx-flash"></div>${damageFx(dmgType)}` : frame}<div class="ddbx-content"><div class="ddbx-impact-att">${att}</div>${focus}<div class="ddbx-impact-readout">${num}${lab}</div></div>`;
       if (isHit) { try { shakeScreen(p.heal ? 'soft' : ((p.total ?? 0) >= 25 ? 'hard' : 'med')); } catch (e) {} }
       // noPan: a conducted apply sequence owns the camera (zoom → pan target-to-target → zoom out); don't let the overlay also pan.
       if (!p.noPan) { try { panToImpactByActors(p.applyIds); } catch (e) {} }
@@ -1342,7 +1345,7 @@ async function renderStinger(p) {
       // Centre: the big roll total (the "result" word) + the action/kind line beneath.
       const rsub = p.action ? esc(p.action) : '';
       const center = `<div class="ddbx-center"><div class="ddbx-burst"></div><div class="ddbx-result">${esc(p.word ?? p.total ?? '')}</div>${rsub ? `<div class="ddbx-rsub">${rsub}</div>` : ''}</div>`;
-      wrap.innerHTML = `${p.crest ? crestBg : bgEl}<div class="ddbx-vig"></div>${tex}${critFx}${frame}<div class="ddbx-pts">${particles}</div><div class="ddbx-stage">${caster}${center}</div>`;
+      wrap.innerHTML = `${p.crest ? crestBg : bgEl}<div class="ddbx-vig"></div>${tex}${critFx}${frame}<div class="ddbx-pts">${particles}</div><div class="ddbx-content"><div class="ddbx-stage">${caster}${center}</div></div>`;
     }
     // GM-only ✕ to dismiss this reveal early (the cinematic root is click-through; the button re-enables its own clicks).
     if (game.user?.isGM) wrap.insertAdjacentHTML('beforeend', '<div class="ddbx-close" title="Dismiss">✕</div>');
@@ -1530,7 +1533,7 @@ function renderGroup(p) {
     if (dur) wrap.style.setProperty('--dur', dur + 'ms');
     let particles = ''; const N = p.phase === 'result' ? 44 : 24;
     for (let i = 0; i < N; i++) { const x = (Math.random() * 100).toFixed(1); const dl = (Math.random() * 1.8).toFixed(2); const du = (1.6 + Math.random() * 1.9).toFixed(2); const sz = (2 + Math.random() * 5).toFixed(1); const sway = Math.round(Math.random() * 50 - 25); const spark = i % 4 === 0 ? ' spark' : ''; particles += `<span class="ddbx-pt${spark}" style="left:${x}%;--sway:${sway}px;width:${sz}px;height:${sz}px;animation-delay:${dl}s;animation-duration:${du}s;"></span>`; }
-    wrap.innerHTML = `<div class="ddbx-vig"></div><div class="ddbx-tex"></div><div class="ddbx-radial"></div><div class="ddbx-pts">${particles}</div><div class="ddbx-ghead">${groupHead(p)}</div><div class="ddbx-gtiles">${tilesHTML}</div>`;
+    wrap.innerHTML = `<div class="ddbx-vig"></div><div class="ddbx-tex"></div><div class="ddbx-radial"></div><div class="ddbx-pts">${particles}</div><div class="ddbx-content"><div class="ddbx-ghead">${groupHead(p)}</div><div class="ddbx-gtiles">${tilesHTML}</div></div>`;
     // GM-only ✕ to reveal the result now (Group Check / Contest) or end the Initiative gather. Persists across in-place updates.
     if (game.user?.isGM && p.phase !== 'result') wrap.insertAdjacentHTML('beforeend', '<div class="ddbx-close" title="Reveal / end">✕</div>');
     // While gathering, hold opacity steady (no auto-fade); the result phase uses the standard fade-out animation.
@@ -1719,7 +1722,7 @@ Hooks.once('ready', () => {
       else if (m?.t === 'groupclear') clearGroupLocal();
     });
   } catch (e) {}
-  if (!game.user.isGM) { console.log('DDB Integrator | ready (v0.2.3)'); return; }
+  if (!game.user.isGM) { console.log('DDB Integrator | ready (v0.2.4)'); return; }
   window.DDBIntegrator = { reconnect, startOwnSocket, editMapping, editCookie, editSounds, fetchCampaignCharacters, startGroup, finalizeGroup, cancelGroup };
   // Replace/suppress Foundry's native dnd5e roll cards — this module posts its own. ONLY native ROLL cards are
   // touched (no item/usage interception, no automation): a GM roll renders our card too, then we keep the native
@@ -1770,5 +1773,5 @@ Hooks.once('ready', () => {
   // Insurance: force one scene-controls re-render now that everything is wired, in case the controls had already
   // painted. The top-level getSceneControlButtons hook is what makes the tools appear; this just guarantees a paint.
   try { ui.controls?.render?.(true); } catch (e) {}
-  console.log('DDB Integrator | ready (v0.2.3)');
+  console.log('DDB Integrator | ready (v0.2.4)');
 });

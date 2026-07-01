@@ -385,7 +385,8 @@ function resolveAction(actor, name) {
 // ONE public, informational card per roll. Roller portrait + name, action/item name, the
 // roll TOTAL (large), the dice breakdown, the kind (icon + label), an advantage/disadvantage
 // pill when present, crit/fumble emphasis, and damage type(s). No targets, no buttons.
-function speakerFor(c) { return c.actorId ? ChatMessage.getSpeaker({ actor: game.actors.get(c.actorId) }) : { alias: c.who }; }
+// A concealed roller gets an "Unknown" alias with no actor link, so the chat header doesn't reveal a hidden NPC's name/portrait.
+function speakerFor(c) { if (c.concealRoller) return { alias: 'Unknown' }; return c.actorId ? ChatMessage.getSpeaker({ actor: game.actors.get(c.actorId) }) : { alias: c.who }; }
 function kindMeta(c) {
   switch (c.kind) {
     case 'attack': return { ic: IC.attack, label: 'to hit', hero: 'atk' };
@@ -558,6 +559,10 @@ function openSaveCard(message, info) {
     let actor = message.speaker?.actor ? game.actors.get(message.speaker.actor) : null;
     if (!actor && message.speaker?.token) { try { actor = (message.speaker.scene ? game.scenes.get(message.speaker.scene) : canvas.scene)?.tokens?.get(message.speaker.token)?.actor; } catch (e) {} }
     const actorId = actor?.id || null;
+    // Conceal the caster too when its token is unrevealed (a hidden NPC casting a save spell shouldn't out itself on the card header).
+    let _cTok = null;
+    try { const scn = message.speaker?.scene ? game.scenes.get(message.speaker.scene) : canvas.scene; _cTok = message.speaker?.token ? (scn?.tokens?.get(message.speaker.token)?.object || canvas.tokens?.get?.(message.speaker.token)) : (actor?.getActiveTokens?.()?.[0] || null); } catch (e) {}
+    const concealRoller = respectVis() && tokenConcealed(_cTok);
     let item = null; try { item = message.flags?.dnd5e?.item?.uuid ? fromUuidSync(message.flags.dnd5e.item.uuid) : null; } catch (e) {}
     const action = item?.name || (message.flavor || '').split(' - ')[0].trim() || 'Saving Throw';
     const key = (actorId || message.alias || '?') + '::' + action;
@@ -571,7 +576,7 @@ function openSaveCard(message, info) {
       rec.data.save = save; rec.data.kind = 'save'; if (targets.length) rec.data.targets = targets; rec.at = now; scheduleCardUpdate(rec);
       return;
     }
-    const data = { who: actor?.name || message.alias || '', action, actorId, actorImg: actor?.img || '', img: item?.img || '', kind: 'save', targets, toHit: null, save, damage: null };
+    const data = { who: concealRoller ? 'Unknown' : (actor?.name || message.alias || ''), action, actorId, concealRoller, actorImg: concealRoller ? MYSTERY : (actor?.img || ''), img: item?.img || '', kind: 'save', targets, toHit: null, save, damage: null };
     ChatMessage.create({ speaker: speakerFor(data), content: publicCard(data), flags: { [NS]: { card: true, cardData: data } } })
       .then(msg => { if (msg) _actionCards.set(key, { msgId: msg.id, data, at: now, dmgCount: 0, timer: null }); })
       .catch(() => {});
@@ -596,12 +601,15 @@ async function present(p) {
     // ONLY attacks + damage have targets. Initiative, saves, and skill checks are reports on the ACTOR's own roll — they
     // never target anyone, so ignore whatever token happens to be selected (a Contest / Group Check gathers rollers, not targets).
     const targets = (p.kind === 'attack' || p.kind === 'damage') ? captureTargets() : [];   // presentation only
+    // Conceal the ROLLER too when its token is unrevealed (renderLocalMessage flags it) — so a hidden NPC can't out itself
+    // by acting. Display-only: 'Unknown' + a mystery portrait on the header, cinematic, and group tiles; actorId stays real.
+    const concealRoller = !!p.concealRoller;
     const card = {
-      who: p.who, action: p.action, actorId: actor?.id || null,
+      who: concealRoller ? 'Unknown' : p.who, action: p.action, actorId: actor?.id || null, concealRoller,
       kind: p.kind, heal: !!p.heal, ability: p.ability || null,
       total: Number(p.total) || 0, nat: p.nat ?? null, advKind: p.advKind || '',
       damageType: p.damageType || '', damageTypes: p.damageTypes || [], damageParts: p.damageParts || null,
-      img: p.img || '', actorImg: actor?.img || '', formula: p.formula || '',
+      img: p.img || '', actorImg: concealRoller ? MYSTERY : (actor?.img || ''), formula: p.formula || '',
       target: targets[0] || null, targets,   // PRESENTATION ONLY — first frames the impact cinematic; the card lists all.
     };
     if (card.kind === 'attack') { try { recordAttackHits(card); } catch (e) {} }   // remember hit/miss for the tray + card colouring
@@ -827,6 +835,10 @@ function renderLocalMessage(message, keepNative) {
   const rtype = f.roll?.type;
   let actor = message.speaker?.actor ? game.actors.get(message.speaker.actor) : null;
   if (!actor && message.speaker?.token) { try { actor = (message.speaker.scene ? game.scenes.get(message.speaker.scene) : canvas.scene)?.tokens?.get(message.speaker.token)?.actor; } catch (e) {} }
+  // Is the roller a token Foundry hides from players (GM-rolled hidden/unnamed NPC)? Then conceal its identity on the shared surfaces.
+  let _rTok = null;
+  try { const scn = message.speaker?.scene ? game.scenes.get(message.speaker.scene) : canvas.scene; _rTok = message.speaker?.token ? (scn?.tokens?.get(message.speaker.token)?.object || canvas.tokens?.get?.(message.speaker.token)) : (actor?.getActiveTokens?.()?.[0] || null); } catch (e) {}
+  const concealRoller = respectVis() && tokenConcealed(_rTok);
   let item = null; try { item = f.item?.uuid ? fromUuidSync(f.item.uuid) : null; } catch (e) {}
   const action = item?.name || (message.flavor || '').split(' - ')[0].trim() || rtype || 'Roll';
   const who = actor?.name || message.alias || action;
@@ -863,7 +875,7 @@ function renderLocalMessage(message, keepNative) {
   const dmgParts = (kind === 'damage' && !healFlag) ? damagePartsFromRolls(message.rolls) : null;
   const total = (dmgParts && dmgParts.length) ? dmgParts.reduce((s, p) => s + p.value, 0) : Number(roll.total ?? 0);
   present({
-    who, action: label, actorId: actor?.id || null,
+    who, action: label, actorId: actor?.id || null, concealRoller,
     kind, heal: healFlag, ability: (kind === 'check' || kind === 'save') ? ability : null,
     total, nat,
     damageType: ctx.damageType, damageTypes: ctx.damageTypes, damageParts: dmgParts && dmgParts.length ? dmgParts : undefined,
@@ -1621,6 +1633,9 @@ function announce(card) {
     // (the dnd5e.applyDamage hook below), so the number shown reflects any ×2 / resistance. The stylized card still posts.
     if (card.kind === 'damage') return;
     const actor = card.actorId ? game.actors.get(card.actorId) : null;
+    // Concealed roller → 'Unknown' + mystery portrait in the cinematic too (announce re-derives actor.img, so honour the flag here).
+    const rWho = card.concealRoller ? 'Unknown' : (card.who || actor?.name || '');
+    const rImg = card.concealRoller ? MYSTERY : (actor?.img || '');
     const nat = card.nat ?? null;
     const isGen = card.kind === 'check' || card.kind === 'save' || card.kind === 'init' || card.kind === 'death';
     const hue = abilityHue(card.ability);
@@ -1640,7 +1655,7 @@ function announce(card) {
       const hasVerdict = tgtsP.some(t => t.hit === true || t.hit === false);   // a verdict extends the impact: hold the duration AFTER the reveal
       const payload = {
         phase: 'impact', kind: card.kind, total: card.total, dtype, heal: !!card.heal, nat, action: card.action || '',
-        who: card.who || actor?.name || '', actorImg: actor?.img || '', img: card.img || '', hue,
+        who: rWho, actorImg: rImg, img: card.img || '', hue,
         targetName: card.target.name || '', targetImg: card.target.img || '',
         targets: tgtsP,
         applyIds: (card.targets || []).map(t => t && t.id).filter(Boolean),   // ALL target ids → camera frames them all (read-only)
@@ -1658,7 +1673,7 @@ function announce(card) {
     const action = `${esc(card.action || m.label)} · ${m.label}`;
     const payload = {
       phase: 'result', word, total: card.total, tone, action,
-      who: card.who || actor?.name || '', actorImg: actor?.img || '',
+      who: rWho, actorImg: rImg,
       img: card.img || '', crest: isGen, color: actorThemeColor(actor), hue: hue,
     };
     // Pick the sound cue: crit / fumble override, then damage / heal, else any-roll.
@@ -2100,7 +2115,7 @@ Hooks.once('ready', () => {
       else if (m?.t === 'groupclear') clearGroupLocal();
     });
   } catch (e) {}
-  if (!game.user.isGM) { console.log('DDB Integrator | ready (v0.2.21)'); return; }
+  if (!game.user.isGM) { console.log('DDB Integrator | ready (v0.2.22)'); return; }
   window.DDBIntegrator = { reconnect, startOwnSocket, editMapping, editCookie, editSounds, fetchCampaignCharacters, startGroup, finalizeGroup, cancelGroup };
   // Replace/suppress Foundry's native dnd5e roll cards — this module posts its own. ONLY native ROLL cards are
   // touched (no item/usage interception, no automation): a GM roll renders our card too, then we keep the native
@@ -2171,5 +2186,5 @@ Hooks.once('ready', () => {
   // Insurance: force one scene-controls re-render now that everything is wired, in case the controls had already
   // painted. The top-level getSceneControlButtons hook is what makes the tools appear; this just guarantees a paint.
   try { ui.controls?.render?.(true); } catch (e) {}
-  console.log('DDB Integrator | ready (v0.2.21)');
+  console.log('DDB Integrator | ready (v0.2.22)');
 });

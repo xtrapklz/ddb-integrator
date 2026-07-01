@@ -149,6 +149,15 @@ const STYLES = `
 .ddbx-tfoc.v-hit{--c1:#4fd06a;--c2:rgba(79,208,106,.55);}
 .ddbx-tfoc.v-miss{--c1:#ff5b5b;--c2:rgba(255,91,91,.5);}
 .ddbx-tfoc.v-miss .ddbx-target{filter:grayscale(.5) brightness(.82);}
+.ddbx-cfhead{position:absolute;left:0;right:0;top:1vh;text-align:center;font-size:20px;letter-spacing:.14em;text-transform:uppercase;color:#fff;text-shadow:0 2px 10px #000;}
+.ddbx-cfhead b{color:#ffd76a;}
+.ddbx-vbtns{display:flex;gap:8px;margin-top:11px;pointer-events:auto;}
+.ddbx-vbtn{font:700 13px/1 var(--font-primary,'Signika',sans-serif);letter-spacing:.05em;text-transform:uppercase;padding:8px 12px;border-radius:8px;border:1.5px solid rgba(255,255,255,.3);background:rgba(0,0,0,.55);color:#cfcfcf;cursor:pointer;transition:background .12s,border-color .12s,color .12s;}
+.ddbx-vbtn:hover{border-color:#fff;color:#fff;}
+.ddbx-vbtn.hit.on{background:rgba(79,208,106,.92);border-color:#4fd06a;color:#08210d;}
+.ddbx-vbtn.miss.on{background:rgba(255,91,91,.92);border-color:#ff5b5b;color:#2a0808;}
+.ddbx-confirm-done{position:absolute;top:var(--ci-y,6vh);right:var(--ci-x,6vw);padding:11px 20px;border-radius:24px;background:rgba(79,208,106,.94);border:1.6px solid #6be27a;color:#06220c;font:800 15px/1 var(--font-primary,'Signika',sans-serif);letter-spacing:.05em;cursor:pointer;pointer-events:auto;z-index:31;transition:transform .12s,background .12s;}
+.ddbx-confirm-done:hover{transform:scale(1.05);background:#6be27a;}
 .ddbx-impact-focus.multi .ddbx-verdict{font-size:15px;margin-top:6px;}
 .ddbx-impact-focus.multi .ddbx-tname{font-size:15px;margin-top:8px;letter-spacing:.08em;}
 .lay-orbit .ddbx-impact-focus .ddbx-target{width:218px;height:218px;}
@@ -418,7 +427,7 @@ function hitForUuid(uuid) {
   } catch (e) { return null; }
 }
 function cardTargets(card) {
-  try { return buildNativeTargets(card.targets).map(nt => ({ img: nt.img, name: nt.name, hit: hitForUuid(nt.uuid) })); } catch (e) { return []; }
+  try { return buildNativeTargets(card.targets).map(nt => ({ img: nt.img, name: nt.name, uuid: nt.uuid, hit: hitForUuid(nt.uuid) })); } catch (e) { return []; }
 }
 // Fold one damage roll into a card's damage. DDB sends one roll PER type (in the action's part order), so the type comes
 // from damageTypes[idx]; same-type rolls merge into one chip; the total accumulates.
@@ -616,7 +625,7 @@ function buildNativeTargets(targets) {
 // SEPARATE rolls, so when an attack lands we record per-target hit/miss (vs each target's AC; nat 20 always hits / nat 1
 // always misses); the FOLLOWING damage roll reads it to pre-set ×0 for any target the attack missed. Consumed on read so
 // a later save-spell on the same token isn't wrongly zeroed; ignored if older than two minutes.
-let _attackHits = new Map(), _attackHitsAt = 0;
+let _attackHits = new Map(), _attackHitsAt = 0, _attackHitsConfirmed = false;   // confirmed: manual verdict has been given
 function recordAttackHits(card) {
   try {
     const hits = new Map();
@@ -625,14 +634,14 @@ function recordAttackHits(card) {
       const hit = card.nat === 20 ? true : card.nat === 1 ? false : (nt.ac == null ? true : Number(card.total) >= Number(nt.ac));
       hits.set(nt.uuid, hit);
     }
-    if (hits.size) { _attackHits = hits; _attackHitsAt = Date.now(); }
+    if (hits.size) { _attackHits = hits; _attackHitsAt = Date.now(); _attackHitsConfirmed = false; }   // fresh attack → needs re-confirm (manual)
   } catch (e) {}
 }
 // ×0 multipliers for targets the most recent attack MISSED (resistance/vulnerability is left to dnd5e's own trait math).
 function missedMultipliers(card) {
   const out = [];
   try {
-    if (!game.settings.get(NS, 'autoConfirmHits')) return out;   // verdict off → don't auto-zero missed targets on the tray either
+    if (!game.settings.get(NS, 'autoConfirmHits') && !_attackHitsConfirmed) return out;   // manual + not yet confirmed → don't zero the tray
     if (!_attackHits.size || (Date.now() - _attackHitsAt) > 120000) return out;   // no recent attack → don't pre-zero
     for (const nt of buildNativeTargets(card.targets)) {
       if (nt.uuid && _attackHits.get(nt.uuid) === false) out.push({ uuid: nt.uuid, multiplier: 0 });
@@ -1284,7 +1293,7 @@ function fitCinematic(wrap) {
 Hooks.on('collapseSidebar', () => { try { document.querySelectorAll('.ddbx-sting').forEach(el => fitCinematic(el)); } catch (e) {} });
 // Cinematics are SERIALIZED through a queue so a new one can never render on top of one already on screen.
 let _stQ = [], _stBusy = false;
-function playStinger(p) { try { if (!p) return; if (GroupRoll.active && game.user?.isGM) return; _stQ.push(p); pumpStingers(); } catch (e) {} }
+function playStinger(p) { try { if (!p) return; if (GroupRoll.active && game.user?.isGM) return; if (_confirmEl) return; _stQ.push(p); pumpStingers(); } catch (e) {} }
 // Single-roll cinematic on-screen time (ms), from the GM-set "Cinematic duration" setting. Clamped to a sane floor.
 function cineMs() { try { return Math.max(800, Math.round((Number(game.settings.get(NS, 'cinematicDuration')) || 3.5) * 1000)); } catch (e) { return 3500; } }
 function pumpStingers() {
@@ -1396,6 +1405,8 @@ function announce(card) {
       const dtype = isDmg ? (card.damageType || (card.damageTypes && card.damageTypes[0]) || '') : '';
       // HIT / MISS verdict per target (vs AC), when enabled — greens the hits, reds the misses on the reveal.
       let showVerdict = false; try { showVerdict = game.settings.get(NS, 'autoConfirmHits'); } catch (e) {}
+      // Verdict OFF → the GM confirms each target by hand on a persistent confirm cinematic (resolves to the reveal itself).
+      if (card.kind === 'attack' && game.user?.isGM && !showVerdict && (card.targets || []).length) { openConfirm(card); return; }
       const nts = buildNativeTargets(card.targets);
       const payload = {
         phase: 'impact', kind: card.kind, total: card.total, dtype, heal: !!card.heal, nat, action: card.action || '',
@@ -1564,6 +1575,82 @@ function renderGroup(p) {
 }
 // Tear down the group cinematic on THIS client (used on cancel / clear, broadcast to all).
 function clearGroupLocal() { try { clearTimeout(_groupTimer); if (_groupEl) { _groupEl.remove(); _groupEl = null; } } catch (e) {} }
+
+// ─── Manual attack HIT / MISS confirm (shown when the verdict setting is OFF): a persistent GM-only cinematic that frames
+// each target with Hit / Miss buttons (pre-seeded to the AC guess). Confirming writes the verdicts, greys the misses on the
+// card, sets up the tray's ×0, and reveals the outcome to everyone. GM-local; players only see the resolved verdict.
+let _confirmEl = null, _confirmCard = null, _confirmHits = new Map();
+function openConfirm(card) {
+  try {
+    if (!document.body) return;
+    closeConfirm();
+    _confirmCard = card; _confirmHits = new Map();
+    for (const nt of buildNativeTargets(card.targets)) {
+      if (!nt.uuid) continue;
+      const g = _attackHits.get(nt.uuid);   // pre-seed with the AC guess so the GM just accepts or flips
+      _confirmHits.set(nt.uuid, { name: nt.name, img: nt.img, hit: (g === false) ? false : true });
+    }
+    if (!_confirmHits.size) { _confirmCard = null; return; }
+    _confirmEl = document.createElement('div');
+    _confirmEl.className = 'ddbx-sting lay-orbit ph-impact ddbx-confirm';
+    document.body.appendChild(_confirmEl);
+    renderConfirmEl();
+    try { fitCinematic(_confirmEl); } catch (e) {}
+  } catch (e) { console.warn('DDB Integrator | openConfirm', e); }
+}
+function renderConfirmEl() {
+  if (!_confirmEl || !_confirmCard) return;
+  const card = _confirmCard;
+  const actor = card.actorId ? game.actors.get(card.actorId) : null;
+  const aImg = actor?.img || card.img || '';
+  const att = aImg ? `<div class="ddbx-strike" style="background-image:url('${cleanUrl(aImg)}')">${card.img && actor?.img ? `<span class="ddbx-strikesub" style="background-image:url('${cleanUrl(card.img)}')"></span>` : ''}</div>` : '';
+  const n = _confirmHits.size, tsz = n <= 1 ? 168 : n <= 3 ? 138 : n <= 6 ? 110 : 90;
+  const tiles = Array.from(_confirmHits, ([uuid, t]) => {
+    const v = t.hit === false ? 'miss' : 'hit';
+    return `<div class="ddbx-tfoc v-${v}" style="width:${tsz + 34}px">${t.img ? `<span class="ddbx-target" style="width:${tsz}px;height:${tsz}px;background-image:url('${cleanUrl(t.img)}'),var(--ddbx-portbg)"></span>` : ''}${t.name ? `<span class="ddbx-tname">${esc(t.name)}</span>` : ''}<div class="ddbx-vbtns"><button class="ddbx-vbtn hit${t.hit !== false ? ' on' : ''}" data-uuid="${esc(uuid)}" data-v="hit"><i class="fas fa-check"></i> Hit</button><button class="ddbx-vbtn miss${t.hit === false ? ' on' : ''}" data-uuid="${esc(uuid)}" data-v="miss"><i class="fas fa-xmark"></i> Miss</button></div></div>`;
+  }).join('');
+  _confirmEl.innerHTML = `<div class="ddbx-vig"></div><div class="ddbx-tex"></div><div class="ddbx-content"><div class="ddbx-impact-att">${att}</div><div class="ddbx-cfhead">Confirm hits · to hit <b>${esc(card.total)}</b></div><div class="ddbx-impact-focus multi">${tiles}</div></div><div class="ddbx-confirm-done" title="Confirm">Confirm ✓</div>`;
+}
+function closeConfirm() { try { if (_confirmEl) { _confirmEl.remove(); _confirmEl = null; } _confirmCard = null; } catch (e) {} }
+function resolveConfirm() {
+  try {
+    const card = _confirmCard, hits = _confirmHits;
+    closeConfirm();   // remove the overlay FIRST so the verdict flourish below isn't suppressed
+    if (!card) return;
+    for (const [uuid, t] of hits) _attackHits.set(uuid, t.hit);
+    _attackHitsConfirmed = true;
+    // Re-colour the action card (grey the confirmed misses).
+    try {
+      const rec = _actionCards.get(unifiedKey(card));
+      if (rec && rec.data) {
+        for (const tt of (rec.data.targets || [])) { if (tt.uuid && hits.has(tt.uuid)) tt.hit = hits.get(tt.uuid).hit; }
+        const msg = game.messages?.get?.(rec.msgId); if (msg) msg.update({ content: publicCard(rec.data), flags: { [NS]: { card: true, cardData: rec.data } } });
+      }
+    } catch (e) {}
+    // Verdict flourish for everyone.
+    try {
+      const actor = card.actorId ? game.actors.get(card.actorId) : null;
+      const payload = {
+        phase: 'impact', kind: 'attack', total: card.total, dtype: '', heal: false, nat: card.nat ?? null, action: card.action || '',
+        who: card.who || actor?.name || '', actorImg: actor?.img || '', img: card.img || '', hue: abilityHue(card.ability),
+        targetName: '', targetImg: '',
+        targets: Array.from(hits, ([uuid, t]) => ({ name: t.name, img: t.img, hit: t.hit })),
+        applyIds: (card.targets || []).map(t => t && t.id).filter(Boolean),
+        cue: card.nat === 20 ? 'crit' : card.nat === 1 ? 'fumble' : 'roll',
+      };
+      playStinger(payload); try { game.socket?.emit(`module.${NS}`, { t: 'stinger', payload }); } catch (e) {}
+    } catch (e) {}
+  } catch (e) { console.warn('DDB Integrator | resolveConfirm', e); }
+}
+// GM clicks on the confirm overlay: Hit/Miss per target (flip), Confirm (resolve). Capture-phase so it runs before anything else.
+document.addEventListener('click', ev => {
+  try {
+    if (!_confirmEl || !game.user?.isGM) return;
+    const btn = ev.target?.closest?.('.ddbx-vbtn');
+    if (btn && _confirmEl.contains(btn)) { const t = _confirmHits.get(btn.dataset.uuid); if (t) { t.hit = (btn.dataset.v === 'hit'); renderConfirmEl(); } return; }
+    if (ev.target?.closest?.('.ddbx-confirm-done')) resolveConfirm();
+  } catch (e) {}
+}, true);
 
 // GM: START a session for the given mode and open the gathering cinematic on every client.
 function startGroup(mode) {
@@ -1738,7 +1825,7 @@ Hooks.once('ready', () => {
       else if (m?.t === 'groupclear') clearGroupLocal();
     });
   } catch (e) {}
-  if (!game.user.isGM) { console.log('DDB Integrator | ready (v0.2.5)'); return; }
+  if (!game.user.isGM) { console.log('DDB Integrator | ready (v0.2.6)'); return; }
   window.DDBIntegrator = { reconnect, startOwnSocket, editMapping, editCookie, editSounds, fetchCampaignCharacters, startGroup, finalizeGroup, cancelGroup };
   // Replace/suppress Foundry's native dnd5e roll cards — this module posts its own. ONLY native ROLL cards are
   // touched (no item/usage interception, no automation): a GM roll renders our card too, then we keep the native
@@ -1789,5 +1876,5 @@ Hooks.once('ready', () => {
   // Insurance: force one scene-controls re-render now that everything is wired, in case the controls had already
   // painted. The top-level getSceneControlButtons hook is what makes the tools appear; this just guarantees a paint.
   try { ui.controls?.render?.(true); } catch (e) {}
-  console.log('DDB Integrator | ready (v0.2.5)');
+  console.log('DDB Integrator | ready (v0.2.6)');
 });

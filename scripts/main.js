@@ -262,6 +262,32 @@ function injectStyles() { let el = document.getElementById('ddbx-int-styles'); i
 function esc(s) { return foundry.utils.escapeHTML ? foundry.utils.escapeHTML(String(s)) : String(s); }
 // Sanitize a string used inside a CSS url('…') within an HTML style attribute.
 function cleanUrl(s) { return String(s ?? '').replace(/['"<>\\\r\n\t]/g, '').slice(0, 2000); }
+// --- diagnostics + player-facing concealment + housekeeping ---
+// Opt-in verbose logging: surfaces the otherwise-silent catches so a play-test bug leaves a trace. Off by default.
+function dbg(...args) { try { if (game.settings.get(NS, 'debug')) console.warn('[ddbx]', ...args); } catch (e) {} }
+const MYSTERY = 'icons/svg/mystery-man.svg';
+function respectVis() { try { return game.settings.get(NS, 'respectTokenVisibility'); } catch (e) { return true; } }
+// Would Foundry hide this token's identity from a non-owner? GM-hidden, or a displayName mode that isn't player-visible —
+// unless it's a player-owned token (PCs are known). Used so a shared card/cinematic doesn't broadcast an unrevealed NPC's
+// name + portrait to the whole table. Only the DISPLAY is concealed; correlation still uses the real token id/uuid.
+function tokenConcealed(token) {
+  try {
+    if (!token) return false;
+    if (token.actor?.hasPlayerOwner) return false;
+    const doc = token.document || token;
+    if (doc?.hidden) return true;
+    // TOKEN_DISPLAY_MODES: HOVER=30 / ALWAYS=50 are player-visible; anything else (NONE/CONTROL/OWNER_HOVER/OWNER) is not.
+    // Resolve from either constants location (the global CONST is being deprecated toward foundry.CONST); hardcode as a floor.
+    const M = (globalThis.CONST || globalThis.foundry?.CONST)?.TOKEN_DISPLAY_MODES || { HOVER: 30, ALWAYS: 50 };
+    const mode = doc?.displayName;
+    return !(mode === M.HOVER || mode === M.ALWAYS);   // concealed unless the name is player-visible (hover/always)
+  } catch (e) { return false; }
+}
+// Throttled GM-only heads-up (e.g. "you rolled with no targets"). Once per 4s so it can't spam.
+let _lastToast = 0;
+function gmToast(msg) { try { if (!game.user?.isGM) return; const n = Date.now(); if (n - _lastToast < 4000) return; _lastToast = n; ui.notifications?.warn(`DDB Integrator: ${msg}`); } catch (e) {} }
+// Trim an insertion-ordered Set to its most-recent `max` ids (the dedupe Sets would otherwise grow all session).
+function capSet(set, max) { try { if (set.size <= max) return; let drop = set.size - max; for (const v of set) { if (drop-- <= 0) break; set.delete(v); } } catch (e) {} }
 // Harden a stinger payload received over the socket (ANY client can emit one) before it reaches innerHTML.
 function sanitizeStinger(p) {
   if (!p || typeof p !== 'object') return null;
@@ -495,7 +521,7 @@ function addDmgToCard(data, card, idx) {
 function scheduleCardUpdate(rec) {
   clearTimeout(rec.timer);   // coalesce the per-type damage rolls (they arrive in a burst) into one re-render
   rec.timer = setTimeout(async () => {
-    try { const msg = game.messages?.get?.(rec.msgId); if (msg) await msg.update({ content: publicCard(rec.data), flags: { [NS]: { card: true, cardData: rec.data } } }); } catch (e) {}
+    try { const msg = game.messages?.get?.(rec.msgId); if (msg) await msg.update({ content: publicCard(rec.data), flags: { [NS]: { card: true, cardData: rec.data } } }); } catch (e) { dbg('scheduleCardUpdate', e); }
   }, 120);
 }
 // Post (or expand) the stylized card. Attack → a fresh card with To Hit; its damage rolls EXPAND that same card; a damage
@@ -538,6 +564,7 @@ function openSaveCard(message, info) {
     const now = Date.now();
     const save = { dc: info.dc ?? null, ability: info.ability || '' };
     const targets = cardTargets({ targets: captureTargets() });
+    if (!targets.length) gmToast("save action used with no targets — nobody to track saves for.");
     _attackHits = new Map();   // a save action → the next damage is save-based, not attack-based; drop any stale attack multipliers
     const rec = _actionCards.get(key);
     if (rec && (now - rec.at) < 120000 && game.messages?.get?.(rec.msgId)) {   // same action fired again → refresh in place
@@ -559,7 +586,7 @@ function refreshSaveCards() {
       const next = cur.map(t => ({ ...t, pf: pfForUuid(t.uuid) }));
       if (next.some((t, i) => t.pf !== cur[i]?.pf)) { rec.data.targets = next; scheduleCardUpdate(rec); }
     }
-  } catch (e) {}
+  } catch (e) { dbg('refreshSaveCards', e); }
 }
 
 // Present ONE roll: post the public card, animate the DDB dice, fire the cinematic + sound.
@@ -578,6 +605,9 @@ async function present(p) {
       target: targets[0] || null, targets,   // PRESENTATION ONLY — first frames the impact cinematic; the card lists all.
     };
     if (card.kind === 'attack') { try { recordAttackHits(card); } catch (e) {} }   // remember hit/miss for the tray + card colouring
+    // Heads-up if the GM rolled an attack with nothing targeted while relying on hit/miss — the verdict + tray multipliers
+    // have nothing to act on. Throttled; only when an auto feature is on (so it isn't nagging manual-only GMs).
+    try { if (card.kind === 'attack' && game.user?.isGM && !card.targets.length && (game.settings.get(NS, 'autoConfirmHits') || game.settings.get(NS, 'autoApplyDamage'))) gmToast("no targets selected — hit/miss and damage multipliers won't be set."); } catch (e) {}
     // While a Group Save is gathering, each save roll folds into the unified save card + the group cinematic — it does NOT
     // get its own classic card. (A lone save with no gather still posts its card, as before.)
     const foldSave = card.kind === 'save' && GroupRoll.active && GroupRoll.mode === 'save' && game.user?.isGM;
@@ -617,10 +647,20 @@ async function present(p) {
 // Uses the actor PORTRAIT (actor.img), falling back to the token image.
 function captureTargets() {
   try {
+    const respect = respectVis();
     return Array.from(game.user?.targets || [])
-      .map(t => ({ id: t.id || null, name: t.actor?.name || t.name || '', img: t.actor?.img || t.document?.texture?.src || '' }))
+      .map(t => {
+        // Concealed target → show a generic "Unknown" + mystery portrait to the table (but keep the real token id so the
+        // hit/miss + multiplier correlation still resolves the actual actor). Otherwise the token's own display name.
+        const hide = respect && tokenConcealed(t);
+        return {
+          id: t.id || null,
+          name: hide ? 'Unknown' : (t.document?.name || t.name || t.actor?.name || ''),
+          img: hide ? MYSTERY : (t.actor?.img || t.document?.texture?.src || ''),
+        };
+      })
       .filter(t => t.img || t.name);
-  } catch (e) { return []; }
+  } catch (e) { dbg('captureTargets', e); return []; }
 }
 // Write a rolled initiative value onto the actor's combatant(s) in the active combat. GM only; no-op without a combat
 // or a matching combatant. This is the ONLY place the module writes Foundry state — and only the initiative field.
@@ -2016,6 +2056,8 @@ Hooks.once('init', () => {
   game.settings.register(NS, 'cinematicDuration', { name: 'Cinematic duration (seconds)', hint: 'How long a single-roll cinematic stays on screen before it fades (also sets the spacing between back-to-back reveals and the group result reveal). Group Check / Contest / Initiative gathering stay up until you finalize them.', scope: 'world', config: true, type: Number, range: { min: 1.5, max: 10, step: 0.5 }, default: 3.5 });
   game.settings.register(NS, 'autoConfirmHits', { name: 'Attack hit / miss verdict', hint: 'On an attack, mark each target HIT or MISS — green or red — on the cinematic + the chat card, decided by the roll vs the target’s AC. Turn OFF and you confirm each target’s hit/miss by hand on a cinematic prompt instead. GM only.', scope: 'world', config: true, type: Boolean, default: true });
   game.settings.register(NS, 'autoApplyDamage', { name: 'Auto-apply damage (alpha)', hint: '⚠ Alpha. Automatically apply attack damage to your HIT targets as it rolls, so you don’t click the tray’s Apply button. Missed targets are skipped and resistances/vulnerabilities still apply. GM only, off by default. Saving-throw and direct-damage spells still need a manual Apply for now. Don’t also click Apply while this is on, or the damage lands twice.', scope: 'world', config: true, type: Boolean, default: false });
+  game.settings.register(NS, 'respectTokenVisibility', { name: 'Hide unrevealed targets from players', hint: 'On the shared card + cinematic, replace a target’s name and portrait with “Unknown” + a mystery silhouette when Foundry would hide that token from players (GM-hidden, or a display-name setting that isn’t player-visible). Stops an ambush or an unrevealed NPC being spoiled on-screen. The GM’s own targeting, hit/miss and multipliers are unaffected. On by default.', scope: 'world', config: true, type: Boolean, default: true });
+  game.settings.register(NS, 'debug', { name: 'Debug logging', hint: 'Log otherwise-silent internal warnings to the browser console (prefixed [ddbx]) to help diagnose an issue. Off by default.', scope: 'client', config: true, type: Boolean, default: false });
   // ─── Sound (per-client) ───
   // All sound state — on/off, volume, and a file per cue (incl. every damage type) — lives in this single object,
   // edited via the "Sound Effects" submenu below. Nothing else sits on the main settings page. Ships silent (all blank).
@@ -2058,7 +2100,7 @@ Hooks.once('ready', () => {
       else if (m?.t === 'groupclear') clearGroupLocal();
     });
   } catch (e) {}
-  if (!game.user.isGM) { console.log('DDB Integrator | ready (v0.2.20)'); return; }
+  if (!game.user.isGM) { console.log('DDB Integrator | ready (v0.2.21)'); return; }
   window.DDBIntegrator = { reconnect, startOwnSocket, editMapping, editCookie, editSounds, fetchCampaignCharacters, startGroup, finalizeGroup, cancelGroup };
   // Replace/suppress Foundry's native dnd5e roll cards — this module posts its own. ONLY native ROLL cards are
   // touched (no item/usage interception, no automation): a GM roll renders our card too, then we keep the native
@@ -2118,9 +2160,16 @@ Hooks.once('ready', () => {
   }, true);
   // Standalone: we always own the connection.
   startOwnSocket();
-  setInterval(() => { const sc = Date.now() - 60000; for (const [k, t] of seen) if (t < sc) seen.delete(k); }, 10000);
+  setInterval(() => {
+    const now = Date.now();
+    for (const [k, t] of seen) if (t < now - 60000) seen.delete(k);
+    // Prune stale action-card correlations (reads already ignore anything older than 120s) + clear their pending timers.
+    for (const [k, rec] of _actionCards) if (now - (rec?.at || 0) > 300000) { try { clearTimeout(rec.timer); } catch (e) {} _actionCards.delete(k); }
+    // Bound the dedupe Sets so they can't grow for the whole session.
+    capSet(_autoApplied, 1000); capSet(_seededTrays, 1000);
+  }, 10000);
   // Insurance: force one scene-controls re-render now that everything is wired, in case the controls had already
   // painted. The top-level getSceneControlButtons hook is what makes the tools appear; this just guarantees a paint.
   try { ui.controls?.render?.(true); } catch (e) {}
-  console.log('DDB Integrator | ready (v0.2.20)');
+  console.log('DDB Integrator | ready (v0.2.21)');
 });

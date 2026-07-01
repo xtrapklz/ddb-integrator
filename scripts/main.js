@@ -1241,6 +1241,12 @@ function uiSafeRect() {
   } catch (e) {}
   // Guard against a degenerate/inverted rect (e.g. chrome that fills the screen) → fall back to the full viewport.
   if (!(right - left > 80) || !(bottom - top > 80)) { left = 0; top = 0; right = vw; bottom = vh; }
+  // Extra perimeter breathing room for UI SKINS + modules we can't detect by id (e.g. Combat Carousel across the top).
+  // Pulls the WHOLE cinematic inward off the screen edges — attacker portrait, readouts, AND the ✕ — so nothing hugs the
+  // chrome. The top gets the most (that's where carousels + the attacker portrait sit).
+  const mx = Math.max(22, Math.round(vw * 0.035)), mt = Math.max(30, Math.round(vh * 0.065)), mb = Math.max(22, Math.round(vh * 0.045));
+  left += mx; right -= mx; top += mt; bottom -= mb;
+  if (!(right - left > 80) || !(bottom - top > 80)) return { left: 0, top: 0, width: vw, height: vh };
   return { left, top, width: right - left, height: bottom - top };
 }
 // Pin a cinematic wrap into the UI-safe canvas rectangle. The wrap is inserted right after #board (a possibly
@@ -1411,6 +1417,27 @@ function announce(card) {
    number only. Pure presentation: no HP, no targeting, no hit/miss, no conditions, no buttons. */
 const GroupRoll = { active: false, mode: null, entries: new Map() };
 let _groupFinalizeTimer = null;
+// Auto-close the INITIATIVE cinematic: hold it for the cinematic-duration setting after the FIRST of — the last player
+// combatant submitting initiative, OR combat starting — then resolve it. (The GM's ✕ still closes it manually/early.)
+function allPlayersHaveInit() {
+  try {
+    const combat = game.combat; if (!combat) return false;
+    const players = combat.combatants.filter(c => c.actor?.hasPlayerOwner);
+    return players.length > 0 && players.every(c => c.initiative != null);   // no player combatants → this trigger doesn't apply
+  } catch (e) { return false; }
+}
+function scheduleInitClose() {
+  try {
+    if (!game.user?.isGM || !GroupRoll.active || GroupRoll.mode !== 'init' || GroupRoll.initCloseTimer) return;   // first trigger wins
+    GroupRoll.initCloseTimer = setTimeout(() => {
+      GroupRoll.initCloseTimer = null;
+      if (GroupRoll.active && GroupRoll.mode === 'init') finalizeGroup();
+    }, cineMs());
+  } catch (e) {}
+}
+Hooks.on('combatStart', () => { try { scheduleInitClose(); } catch (e) {} });
+Hooks.on('updateCombat', (combat, changed) => { try { if (changed?.round != null) scheduleInitClose(); } catch (e) {} });
+Hooks.on('updateCombatant', (c, changed) => { try { if (changed?.initiative != null && allPlayersHaveInit()) scheduleInitClose(); } catch (e) {} });
 
 // Refresh the GM toolbar so the active tool reflects the live session state (toggled on/off).
 function refreshGroupControls() { try { ui.controls?.render?.(true); } catch (e) {} }
@@ -1536,6 +1563,7 @@ function startGroup(mode) {
     return;
   }
   GroupRoll.active = true; GroupRoll.mode = mode; GroupRoll.entries.clear(); GroupRoll.startedAt = now;
+  clearTimeout(GroupRoll.initCloseTimer); GroupRoll.initCloseTimer = null;   // fresh session — drop any pending init auto-close
   // Clear any in-flight / queued single-roll cinematics so none linger and overlay the group cinematic.
   try { _stQ.length = 0; _stBusy = false; document.querySelectorAll('.ddbx-sting:not(.ddbx-group)').forEach(el => el.remove()); } catch (e) {}
   clearTimeout(_groupFinalizeTimer); _groupFinalizeTimer = null;
@@ -1569,6 +1597,7 @@ function ingestGroupRoll(info) {
 // GM: FINALIZE — compute the headline (average / winner), reveal it, then fade + clear after ~3.5s. Untoggles the tool.
 function finalizeGroup() {
   if (!game.user?.isGM || !GroupRoll.active) return;
+  clearTimeout(GroupRoll.initCloseTimer); GroupRoll.initCloseTimer = null;   // we're resolving now — cancel any pending auto-close
   const mode = GroupRoll.mode;
   const entries = Array.from(GroupRoll.entries.values()).filter(e => e.total != null);
   let headline = '';
@@ -1690,7 +1719,7 @@ Hooks.once('ready', () => {
       else if (m?.t === 'groupclear') clearGroupLocal();
     });
   } catch (e) {}
-  if (!game.user.isGM) { console.log('DDB Integrator | ready (v0.2.2)'); return; }
+  if (!game.user.isGM) { console.log('DDB Integrator | ready (v0.2.3)'); return; }
   window.DDBIntegrator = { reconnect, startOwnSocket, editMapping, editCookie, editSounds, fetchCampaignCharacters, startGroup, finalizeGroup, cancelGroup };
   // Replace/suppress Foundry's native dnd5e roll cards — this module posts its own. ONLY native ROLL cards are
   // touched (no item/usage interception, no automation): a GM roll renders our card too, then we keep the native
@@ -1741,5 +1770,5 @@ Hooks.once('ready', () => {
   // Insurance: force one scene-controls re-render now that everything is wired, in case the controls had already
   // painted. The top-level getSceneControlButtons hook is what makes the tools appear; this just guarantees a paint.
   try { ui.controls?.render?.(true); } catch (e) {}
-  console.log('DDB Integrator | ready (v0.2.2)');
+  console.log('DDB Integrator | ready (v0.2.3)');
 });

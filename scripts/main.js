@@ -47,6 +47,14 @@ const STYLES = `
 .ddbx2-pc-tgt.miss{--ret:rgba(172,178,190,.82);--retglow:transparent;}
 .ddbx2-pc-tgt.miss .ddbx2-pc-reticule img{filter:grayscale(.85) brightness(.82);}
 .ddbx2-pc-tgt.miss .ddbx2-pc-tname{color:#9aa0ac;}
+.ddbx2-pc-tgt.await{--ret:rgba(150,160,182,.72);--retglow:transparent;}
+.ddbx2-pc-tgt.await .ddbx2-pc-tname{color:#b9c0cf;}
+.ddbx2-pc-tgt.pass{--ret:rgba(120,230,150,.92);--retglow:rgba(90,220,130,.5);}
+.ddbx2-pc-tgt.pass .ddbx2-pc-tname{color:#9fe6b4;}
+.ddbx2-pc-tgt.fail{--ret:rgba(255,92,92,.95);--retglow:rgba(255,55,55,.55);}
+.ddbx2-pc-tgt.fail .ddbx2-pc-tname{color:#ff9a9a;}
+.ddbx2-pc-pf{font-size:10px;font-weight:900;letter-spacing:.09em;text-transform:uppercase;margin-top:-7px;}
+.ddbx2-pc-pf.pass{color:#7fe89a;} .ddbx2-pc-pf.fail{color:#ff8a8a;}
 .ddbx2-pc-tname{font-size:11px;font-weight:bold;color:#ffb3b3;letter-spacing:.02em;text-align:center;line-height:1.15;word-break:break-word;}
 .ddbx2-ac-nums{display:flex;justify-content:center;margin-top:2px;}
 .ddbx2-ac-nums.two{justify-content:space-around;}
@@ -54,6 +62,7 @@ const STYLES = `
 .ddbx2-ac-lbl{font-size:12px;letter-spacing:.09em;text-transform:uppercase;color:var(--txt-dim,#8b90a0);display:flex;align-items:center;justify-content:center;gap:5px;margin-bottom:3px;}
 .ddbx2-ac-val{font-size:40px;font-weight:900;line-height:1;}
 .ddbx2-ac-val.hit{color:#5b9cd6;}
+.ddbx2-ac-val.save{font-size:30px;color:#c9b6f0;}
 .ddbx2-ac-val.dmg{color:var(--coral-text,#e0a878);}
 .ddbx2-ac-chips{display:flex;flex-wrap:wrap;justify-content:center;gap:8px;margin-top:9px;}
 .ddbx2-ac-chip{font-size:12px;font-weight:bold;padding:4px 11px;border-radius:20px;background:rgba(224,130,77,.2);color:var(--coral-text,#e0a878);box-shadow:inset 0 0 0 1px rgba(224,130,77,.45);text-transform:capitalize;}
@@ -361,7 +370,7 @@ function kindMeta(c) {
   }
 }
 function publicCard(c) {
-  if (c.toHit || c.damage) return actionCard(c);   // unified attack+damage card (expands as rolls arrive)
+  if (c.toHit || c.damage || c.save) return actionCard(c);   // unified action card (attack/save + damage, expands as rolls arrive)
   const m = kindMeta(c);
   const nat = c.nat ?? null;
   const heroCls = nat === 20 ? ' crit' : nat === 1 ? ' fumble' : '';
@@ -409,6 +418,7 @@ function actionCard(c) {
   const title = `<div class="ddbx2-pc-title">${esc(c.action || 'Action')}</div>`;
   const cells = [];
   if (c.toHit) cells.push(`<div class="ddbx2-ac-cell"><div class="ddbx2-ac-lbl"><i class="fas fa-crosshairs"></i> To Hit</div><div class="ddbx2-ac-val hit">${esc(c.toHit.value)}</div></div>`);
+  if (c.save) cells.push(`<div class="ddbx2-ac-cell"><div class="ddbx2-ac-lbl"><i class="fas fa-shield-halved"></i> ${esc((c.save.ability || '').toUpperCase())} Save</div><div class="ddbx2-ac-val save">${c.save.dc != null ? `DC ${esc(c.save.dc)}` : 'Save'}</div></div>`);
   if (c.damage) cells.push(`<div class="ddbx2-ac-cell"><div class="ddbx2-ac-lbl"><i class="fas fa-tint"></i> Damage</div><div class="ddbx2-ac-val dmg">${esc(c.damage.total)}</div></div>`);
   const nums = cells.length ? `<div class="ddbx2-ac-nums${cells.length > 1 ? ' two' : ''}">${cells.join('')}</div>` : '';
   let chips = '';
@@ -418,8 +428,16 @@ function actionCard(c) {
   }
   const applied = c.appliedMult ? `<div class="ddbx2-ac-applied">×${esc(c.appliedMult)} applied</div>` : '';
   const tgts = Array.isArray(c.targets) ? c.targets : [];
+  // Target state: a SAVE card shows Pass (green) / Fail (red) like an attack shows Hit / Miss. pf is only honoured on a save
+  // card (c.save) so a stale save result can't tint an attack card's rows.
+  const isSave = !!c.save;
   const target = tgts.length
-    ? `<div class="ddbx2-pc-target">${tgts.map(t => `<div class="ddbx2-pc-tgt${t.hit === false ? ' miss' : ''}">${t.img ? `<span class="ddbx2-pc-reticule"><img src="${cleanUrl(t.img)}" onerror="this.style.display='none'"></span>` : ''}${t.name ? `<span class="ddbx2-pc-tname">${esc(t.name)}</span>` : ''}</div>`).join('')}</div>`
+    ? `<div class="ddbx2-pc-target">${tgts.map(t => {
+        // Save card: pass/fail, or a neutral "awaiting save" ring until it resolves (never a red ring that reads as failed).
+        const st = isSave ? (t.pf === true ? ' pass' : t.pf === false ? ' fail' : ' await') : (t.hit === false ? ' miss' : '');
+        const pf = isSave && t.pf === true ? '<span class="ddbx2-pc-pf pass">Saved</span>' : isSave && t.pf === false ? '<span class="ddbx2-pc-pf fail">Failed</span>' : '';
+        return `<div class="ddbx2-pc-tgt${st}">${t.img ? `<span class="ddbx2-pc-reticule"><img src="${cleanUrl(t.img)}" onerror="this.style.display='none'"></span>` : ''}${t.name ? `<span class="ddbx2-pc-tname">${esc(t.name)}</span>` : ''}${pf}</div>`;
+      }).join('')}</div>`
     : '';
   return `<div class="ddbx2-pc" style="--accent:rgba(196,93,49,.30)">${wm}<div class="ddbx2-pc-body">${title}${nums}${chips}${applied}${target}</div></div>`;
 }
@@ -438,8 +456,22 @@ function hitForUuid(uuid) {
     const h = _attackHits.get(uuid); return h === undefined ? null : h;
   } catch (e) { return null; }
 }
+// Save pass/fail for a target uuid: the LIVE gather first (so the card fills in as saves land), then the last resolved
+// Group Save (_saveResults). null = not yet saved / unknown → the row stays neutral.
+function pfForUuid(uuid) {
+  try {
+    if (!uuid) return null;
+    if (GroupRoll.active && GroupRoll.mode === 'save') {
+      for (const e of GroupRoll.entries.values()) if (e.uuid === uuid && e.pf != null) return e.pf;
+    }
+    if (_saveResults && (Date.now() - _saveResults.at) < 300000) {
+      const v = _saveResults.results.get(uuid); if (v != null) return v;
+    }
+    return null;
+  } catch (e) { return null; }
+}
 function cardTargets(card) {
-  try { return buildNativeTargets(card.targets).map(nt => ({ img: nt.img, name: nt.name, uuid: nt.uuid, hit: hitForUuid(nt.uuid) })); } catch (e) { return []; }
+  try { return buildNativeTargets(card.targets).map(nt => ({ img: nt.img, name: nt.name, uuid: nt.uuid, hit: hitForUuid(nt.uuid), pf: pfForUuid(nt.uuid) })); } catch (e) { return []; }
 }
 // Fold one damage roll into a card's damage. DDB sends one roll PER type (in the action's part order), so the type comes
 // from damageTypes[idx]; same-type rolls merge into one chip; the total accumulates.
@@ -486,6 +518,47 @@ async function presentStylized(card) {
   _actionCards.set(key, { msgId: msg.id, data, at: now, dmgCount, timer: null });
   return msg;
 }
+// A save action's USE card (the native card that prints the save button) anchors the unified card — DDB can't trigger a
+// save, so the ability card is the initiator. We build the card up front with a SAVE cell + the targeted rows, keyed the
+// SAME way the coming damage roll will be (casterId::action), so damage EXPANDS this card no matter which order rolls land
+// (fixes the old order-dependence). Saves fill in Pass/Fail as they arrive.
+function openSaveCard(message, info) {
+  try {
+    if (!game.user?.isGM) return;
+    // Resolve the caster EXACTLY like renderLocalMessage so the damage roll's unifiedKey (casterId::action) matches — incl.
+    // the unlinked-token fallback (speaker.actor is null for unlinked tokens; the damage roll resolves via the token).
+    let actor = message.speaker?.actor ? game.actors.get(message.speaker.actor) : null;
+    if (!actor && message.speaker?.token) { try { actor = (message.speaker.scene ? game.scenes.get(message.speaker.scene) : canvas.scene)?.tokens?.get(message.speaker.token)?.actor; } catch (e) {} }
+    const actorId = actor?.id || null;
+    let item = null; try { item = message.flags?.dnd5e?.item?.uuid ? fromUuidSync(message.flags.dnd5e.item.uuid) : null; } catch (e) {}
+    const action = item?.name || (message.flavor || '').split(' - ')[0].trim() || 'Saving Throw';
+    const key = (actorId || message.alias || '?') + '::' + action;
+    const now = Date.now();
+    const save = { dc: info.dc ?? null, ability: info.ability || '' };
+    const targets = cardTargets({ targets: captureTargets() });
+    _attackHits = new Map();   // a save action → the next damage is save-based, not attack-based; drop any stale attack multipliers
+    const rec = _actionCards.get(key);
+    if (rec && (now - rec.at) < 120000 && game.messages?.get?.(rec.msgId)) {   // same action fired again → refresh in place
+      rec.data.save = save; rec.data.kind = 'save'; if (targets.length) rec.data.targets = targets; rec.at = now; scheduleCardUpdate(rec);
+      return;
+    }
+    const data = { who: actor?.name || message.alias || '', action, actorId, actorImg: actor?.img || '', img: item?.img || '', kind: 'save', targets, toHit: null, save, damage: null };
+    ChatMessage.create({ speaker: speakerFor(data), content: publicCard(data), flags: { [NS]: { card: true, cardData: data } } })
+      .then(msg => { if (msg) _actionCards.set(key, { msgId: msg.id, data, at: now, dmgCount: 0, timer: null }); })
+      .catch(() => {});
+  } catch (e) { console.warn('DDB Integrator | openSaveCard', e); }
+}
+// Re-render any open SAVE card so its target rows reflect the latest Pass/Fail — called as each save lands and on finalize.
+function refreshSaveCards() {
+  try {
+    for (const rec of _actionCards.values()) {
+      if (!rec?.data?.save || !game.messages?.get?.(rec.msgId)) continue;
+      const cur = rec.data.targets || [];
+      const next = cur.map(t => ({ ...t, pf: pfForUuid(t.uuid) }));
+      if (next.some((t, i) => t.pf !== cur[i]?.pf)) { rec.data.targets = next; scheduleCardUpdate(rec); }
+    }
+  } catch (e) {}
+}
 
 // Present ONE roll: post the public card, animate the DDB dice, fire the cinematic + sound.
 async function present(p) {
@@ -503,7 +576,10 @@ async function present(p) {
       target: targets[0] || null, targets,   // PRESENTATION ONLY — first frames the impact cinematic; the card lists all.
     };
     if (card.kind === 'attack') { try { recordAttackHits(card); } catch (e) {} }   // remember hit/miss for the tray + card colouring
-    const styled = await presentStylized(card);   // ONE expanding card per action (attack rolls open it, damage rolls grow it)
+    // While a Group Save is gathering, each save roll folds into the unified save card + the group cinematic — it does NOT
+    // get its own classic card. (A lone save with no gather still posts its card, as before.)
+    const foldSave = card.kind === 'save' && GroupRoll.active && GroupRoll.mode === 'save' && game.user?.isGM;
+    const styled = foldSave ? null : await presentStylized(card);   // ONE expanding card per action (attack opens it, damage grows it)
     // D&D Beyond DAMAGE rolls have no native dnd5e card, so synthesize one (with the system's Apply tray) for the GM.
     // The stylized card's id rides on the damage card so the apply hook can update its displayed total to the applied amount.
     if (p.ddb) { try { synthDamageCard(card, styled?.id); synthAttackCard(card); } catch (e) {} }
@@ -519,7 +595,9 @@ async function present(p) {
     // While a Group Check / Contest session is live, fold this roll into the group cinematic instead of firing the
     // individual roll-reveal flourish (the chat card above is unaffected). An action/item roll (attack/damage) carries
     // its art; a bare ability/skill/save check does not.
-    if (GroupRoll.active && game.user?.isGM) {
+    // A SAVE gather only collects SAVE rolls — a damage/attack roll made during (or just after) it must NOT become a stray
+    // tile; it falls through so its card + impact behave normally (the save card already grew via presentStylized).
+    if (GroupRoll.active && game.user?.isGM && (GroupRoll.mode !== 'save' || card.kind === 'save')) {
       const isAction = card.kind === 'attack' || card.kind === 'damage';
       ingestGroupRoll({
         who: card.who, actorId: actor?.id || null, actorImg: card.actorImg, uuid: actor?.uuid || null,
@@ -1136,6 +1214,7 @@ Hooks.on('createChatMessage', (message) => {
   try {
     if (!game.user?.isGM) return;
     const info = saveCardInfo(message); if (!info) return;
+    openSaveCard(message, info);   // post/refresh the unified save card up front (the anchor for the coming saves + damage)
     if (GroupRoll.active && GroupRoll.mode !== 'save') return;   // don't hijack a live Check / Contest / Init gather
     if (!GroupRoll.active) startGroup('save');
     if (GroupRoll.mode === 'save') { GroupRoll.saveDC = info.dc; GroupRoll.saveAbility = info.ability; broadcastGroup('gathering'); }
@@ -1833,7 +1912,7 @@ function ingestGroupRoll(info) {
       uuid: info.uuid || prev.uuid || null,
     });
     broadcastGroup('gathering');
-    if (allSavesIn()) scheduleSaveClose();   // every targeted token has saved → auto-resolve after a beat
+    if (GroupRoll.mode === 'save') { refreshSaveCards(); if (allSavesIn()) scheduleSaveClose(); }   // fill the card's Pass/Fail; auto-resolve when all in
   } catch (e) { console.warn('DDB Integrator | ingestGroupRoll', e); }
 }
 // GM: FINALIZE — compute the headline (average / winner), reveal it, then fade + clear after ~3.5s. Untoggles the tool.
@@ -1856,6 +1935,7 @@ function finalizeGroup() {
     let pass = 0, fail = 0; const results = new Map();
     for (const e of GroupRoll.entries.values()) { if (e.uuid && e.pf != null) { results.set(e.uuid, e.pf); e.pf ? pass++ : fail++; } }
     _saveResults = { at: Date.now(), dc: GroupRoll.saveDC ?? null, results };
+    refreshSaveCards();   // lock the final Pass/Fail onto the unified save card
     headline = (pass || fail) ? `${pass} passed · ${fail} failed` : '—';
   } else {
     // Group Check: AVERAGE of all totals, rounded UP.

@@ -171,7 +171,7 @@ const STYLES = `
 .ddbx-vbtn:hover{border-color:#fff;color:#fff;}
 .ddbx-vbtn.hit.on{background:rgba(79,208,106,.92);border-color:#4fd06a;color:#08210d;}
 .ddbx-vbtn.miss.on{background:rgba(255,91,91,.92);border-color:#ff5b5b;color:#2a0808;}
-.ddbx-confirm-done{position:absolute;top:var(--ci-y,6vh);right:var(--ci-x,6vw);padding:13px 23px;border-radius:26px;background:rgba(79,208,106,.94);border:1.6px solid #6be27a;color:#06220c;font:800 17px/1 var(--font-primary,'Signika',sans-serif);letter-spacing:.05em;cursor:pointer;pointer-events:auto;z-index:31;transition:transform .12s,background .12s;}
+.ddbx-confirm-done{position:absolute;top:var(--ci-y,6vh);left:var(--ci-x,6vw);padding:13px 23px;border-radius:26px;background:rgba(79,208,106,.94);border:1.6px solid #6be27a;color:#06220c;font:800 17px/1 var(--font-primary,'Signika',sans-serif);letter-spacing:.05em;cursor:pointer;pointer-events:auto;z-index:31;box-shadow:0 2px 14px rgba(0,0,0,.55);transition:transform .12s,background .12s;}
 .ddbx-confirm-done:hover{transform:scale(1.05);background:#6be27a;}
 .ddbx-impact-focus.multi .ddbx-verdict{font-size:23px;margin-top:8px;}
 .ddbx-impact-focus.multi .ddbx-tname{font-size:21px;margin-top:10px;letter-spacing:.08em;}
@@ -2058,7 +2058,7 @@ Hooks.once('ready', () => {
       else if (m?.t === 'groupclear') clearGroupLocal();
     });
   } catch (e) {}
-  if (!game.user.isGM) { console.log('DDB Integrator | ready (v0.2.19)'); return; }
+  if (!game.user.isGM) { console.log('DDB Integrator | ready (v0.2.20)'); return; }
   window.DDBIntegrator = { reconnect, startOwnSocket, editMapping, editCookie, editSounds, fetchCampaignCharacters, startGroup, finalizeGroup, cancelGroup };
   // Replace/suppress Foundry's native dnd5e roll cards — this module posts its own. ONLY native ROLL cards are
   // touched (no item/usage interception, no automation): a GM roll renders our card too, then we keep the native
@@ -2122,5 +2122,5 @@ Hooks.once('ready', () => {
   // Insurance: force one scene-controls re-render now that everything is wired, in case the controls had already
   // painted. The top-level getSceneControlButtons hook is what makes the tools appear; this just guarantees a paint.
   try { ui.controls?.render?.(true); } catch (e) {}
-  console.log('DDB Integrator | ready (v0.2.19)');
+  console.log('DDB Integrator | ready (v0.2.20)');
 });

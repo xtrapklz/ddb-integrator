@@ -143,6 +143,13 @@ const STYLES = `
 .ddbx-impact-att{position:absolute;left:0;right:0;top:9vh;display:flex;justify-content:center;}
 .ddbx-impact-focus{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);display:flex;flex-wrap:wrap;align-items:center;justify-content:center;gap:16px 32px;max-width:88vw;}
 .ddbx-tfoc{display:flex;flex-direction:column;align-items:center;}
+.ddbx-verdict{display:block;margin-top:9px;font-size:22px;font-weight:900;letter-spacing:.18em;text-shadow:0 2px 10px #000,0 0 18px currentColor;animation:ddbx-reveal .5s cubic-bezier(.2,1.5,.4,1) .35s both;}
+.ddbx-verdict.v-hit{color:#5fe07a;}
+.ddbx-verdict.v-miss{color:#ff6a6a;}
+.ddbx-tfoc.v-hit{--c1:#4fd06a;--c2:rgba(79,208,106,.55);}
+.ddbx-tfoc.v-miss{--c1:#ff5b5b;--c2:rgba(255,91,91,.5);}
+.ddbx-tfoc.v-miss .ddbx-target{filter:grayscale(.5) brightness(.82);}
+.ddbx-impact-focus.multi .ddbx-verdict{font-size:15px;margin-top:6px;}
 .ddbx-impact-focus.multi .ddbx-tname{font-size:15px;margin-top:8px;letter-spacing:.08em;}
 .lay-orbit .ddbx-impact-focus .ddbx-target{width:218px;height:218px;}
 .ddbx-impact-readout{position:absolute;left:0;right:0;bottom:13vh;display:flex;flex-direction:column;align-items:center;gap:6px;}
@@ -240,7 +247,7 @@ function sanitizeStinger(p) {
     total: num(p.total), hue: num(p.hue), crest: !!p.crest, cue: str(p.cue, 64),
     dtype: str(p.dtype, 24), heal: !!p.heal, kind: str(p.kind, 16), nat: num(p.nat),
     targetName: str(p.targetName), targetImg: cleanUrl(p.targetImg),
-    targets: Array.isArray(p.targets) ? p.targets.slice(0, 24).map(t => ({ name: str(t?.name, 80), img: cleanUrl(t?.img) })).filter(t => t.img || t.name) : [],
+    targets: Array.isArray(p.targets) ? p.targets.slice(0, 24).map(t => ({ name: str(t?.name, 80), img: cleanUrl(t?.img), hit: (t?.hit === true || t?.hit === false) ? t.hit : null })).filter(t => t.img || t.name) : [],
     applyIds, noPan: !!p.noPan, dur: Number.isFinite(p.dur) ? Math.max(100, Math.round(p.dur)) : undefined,
   };
 }
@@ -404,7 +411,11 @@ async function postPublic(c) {
 let _actionCards = new Map();   // key "actorId::action" -> { msgId, data, at, dmgCount, timer }
 function unifiedKey(card) { return (card.actorId || card.who || '?') + '::' + (card.action || '?'); }
 function hitForUuid(uuid) {
-  try { if (!uuid || !_attackHits.size || (Date.now() - _attackHitsAt) > 120000) return null; const h = _attackHits.get(uuid); return h === undefined ? null : h; } catch (e) { return null; }
+  try {
+    if (!game.settings.get(NS, 'autoConfirmHits')) return null;   // verdict off → no auto hit/miss anywhere (manual confirm coming)
+    if (!uuid || !_attackHits.size || (Date.now() - _attackHitsAt) > 120000) return null;
+    const h = _attackHits.get(uuid); return h === undefined ? null : h;
+  } catch (e) { return null; }
 }
 function cardTargets(card) {
   try { return buildNativeTargets(card.targets).map(nt => ({ img: nt.img, name: nt.name, hit: hitForUuid(nt.uuid) })); } catch (e) { return []; }
@@ -621,6 +632,7 @@ function recordAttackHits(card) {
 function missedMultipliers(card) {
   const out = [];
   try {
+    if (!game.settings.get(NS, 'autoConfirmHits')) return out;   // verdict off → don't auto-zero missed targets on the tray either
     if (!_attackHits.size || (Date.now() - _attackHitsAt) > 120000) return out;   // no recent attack → don't pre-zero
     for (const nt of buildNativeTargets(card.targets)) {
       if (nt.uuid && _attackHits.get(nt.uuid) === false) out.push({ uuid: nt.uuid, multiplier: 0 });
@@ -1329,7 +1341,7 @@ async function renderStinger(p) {
       // The overlay shows EVERY targeted token (portrait + name), centred and wrapping; portraits shrink as the count grows.
       const tlist = (Array.isArray(p.targets) && p.targets.length) ? p.targets : ((p.targetImg || p.targetName) ? [{ img: p.targetImg, name: p.targetName }] : []);
       const tn = tlist.length, tsz = tn <= 1 ? 218 : tn === 2 ? 176 : tn === 3 ? 148 : tn <= 6 ? 120 : 96;
-      const focus = tn ? `<div class="ddbx-impact-focus${tn > 1 ? ' multi' : ''}">${tlist.map(t => `<div class="ddbx-tfoc" style="width:${tsz}px">${t.img ? `<span class="ddbx-target" style="width:${tsz}px;height:${tsz}px;background-image:url('${cleanUrl(t.img)}'),var(--ddbx-portbg)"></span>` : ''}${t.name ? `<span class="ddbx-tname">${esc(t.name)}</span>` : ''}</div>`).join('')}</div>` : '';
+      const focus = tn ? `<div class="ddbx-impact-focus${tn > 1 ? ' multi' : ''}">${tlist.map(t => { const v = t.hit === true ? 'hit' : t.hit === false ? 'miss' : ''; return `<div class="ddbx-tfoc${v ? ' v-' + v : ''}" style="width:${tsz}px">${t.img ? `<span class="ddbx-target" style="width:${tsz}px;height:${tsz}px;background-image:url('${cleanUrl(t.img)}'),var(--ddbx-portbg)"></span>` : ''}${v ? `<span class="ddbx-verdict v-${v}">${v === 'hit' ? 'HIT' : 'MISS'}</span>` : ''}${t.name ? `<span class="ddbx-tname">${esc(t.name)}</span>` : ''}</div>`; }).join('')}</div>` : '';
       const num = (p.total != null) ? `<div class="ddbx-result dmgnum">${esc(p.total)}</div>` : '';
       const labTxt = p.heal ? 'healing' : isHit ? `${esc(p.dtype || '')} damage`.trim() : esc(p.action || 'attack');
       const lab = `<div class="ddbx-rsub">${labTxt}</div>`;
@@ -1382,11 +1394,14 @@ function announce(card) {
     if (isImpact) {
       const isDmg = card.kind === 'damage';
       const dtype = isDmg ? (card.damageType || (card.damageTypes && card.damageTypes[0]) || '') : '';
+      // HIT / MISS verdict per target (vs AC), when enabled — greens the hits, reds the misses on the reveal.
+      let showVerdict = false; try { showVerdict = game.settings.get(NS, 'autoConfirmHits'); } catch (e) {}
+      const nts = buildNativeTargets(card.targets);
       const payload = {
         phase: 'impact', kind: card.kind, total: card.total, dtype, heal: !!card.heal, nat, action: card.action || '',
         who: card.who || actor?.name || '', actorImg: actor?.img || '', img: card.img || '', hue,
         targetName: card.target.name || '', targetImg: card.target.img || '',
-        targets: (card.targets || []).map(t => ({ name: t.name || '', img: t.img || '' })),   // ALL targets → overlay shows each
+        targets: nts.map(nt => ({ name: nt.name || '', img: nt.img || '', hit: showVerdict ? hitForUuid(nt.uuid) : null })),   // ALL targets → overlay shows each
         applyIds: (card.targets || []).map(t => t && t.id).filter(Boolean),   // ALL target ids → camera frames them all (read-only)
         cue: isDmg ? ('dmg.' + dmgKey(dtype)) : (nat === 20 ? 'crit' : nat === 1 ? 'fumble' : 'roll'),
       };
@@ -1680,6 +1695,7 @@ Hooks.once('init', () => {
   // ─── Cinematics ───
   game.settings.register(NS, 'cinematics', { name: 'Cinematic roll reveals', hint: 'Show a brief full-screen flourish when a roll lands — the roller portrait, the total, and the kind, with gold flair for a natural 20 and red for a natural 1. Shown to all players.', scope: 'world', config: true, type: Boolean, default: true });
   game.settings.register(NS, 'cinematicDuration', { name: 'Cinematic duration (seconds)', hint: 'How long a single-roll cinematic stays on screen before it fades (also sets the spacing between back-to-back reveals and the group result reveal). Group Check / Contest / Initiative gathering stay up until you finalize them.', scope: 'world', config: true, type: Number, range: { min: 1.5, max: 10, step: 0.5 }, default: 3.5 });
+  game.settings.register(NS, 'autoConfirmHits', { name: 'Attack hit / miss verdict', hint: 'On an attack, mark each target HIT or MISS — green or red — on the cinematic + the chat card, decided by the roll vs the target’s AC. Turn off to hide the verdict (a manual GM confirm is coming in a later update). GM only.', scope: 'world', config: true, type: Boolean, default: true });
   // ─── Sound (per-client) ───
   // All sound state — on/off, volume, and a file per cue (incl. every damage type) — lives in this single object,
   // edited via the "Sound Effects" submenu below. Nothing else sits on the main settings page. Ships silent (all blank).
@@ -1722,7 +1738,7 @@ Hooks.once('ready', () => {
       else if (m?.t === 'groupclear') clearGroupLocal();
     });
   } catch (e) {}
-  if (!game.user.isGM) { console.log('DDB Integrator | ready (v0.2.4)'); return; }
+  if (!game.user.isGM) { console.log('DDB Integrator | ready (v0.2.5)'); return; }
   window.DDBIntegrator = { reconnect, startOwnSocket, editMapping, editCookie, editSounds, fetchCampaignCharacters, startGroup, finalizeGroup, cancelGroup };
   // Replace/suppress Foundry's native dnd5e roll cards — this module posts its own. ONLY native ROLL cards are
   // touched (no item/usage interception, no automation): a GM roll renders our card too, then we keep the native
@@ -1773,5 +1789,5 @@ Hooks.once('ready', () => {
   // Insurance: force one scene-controls re-render now that everything is wired, in case the controls had already
   // painted. The top-level getSceneControlButtons hook is what makes the tools appear; this just guarantees a paint.
   try { ui.controls?.render?.(true); } catch (e) {}
-  console.log('DDB Integrator | ready (v0.2.4)');
+  console.log('DDB Integrator | ready (v0.2.5)');
 });

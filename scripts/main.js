@@ -1074,6 +1074,32 @@ async function updateStylizedDamage(msgId, applied, multiplier) {
   } catch (e) { console.warn('DDB Integrator | updateStylizedDamage', e); }
 }
 Hooks.on('dnd5e.applyDamage', onDamageApplied);   // fire the damage impact when the GM applies damage (post-multiplier)
+// AUTO-APPLY (alpha, opt-in): when a damage card lands, apply it to the HIT targets without the GM clicking the tray. Mirrors
+// the tray's own apply (applyDamage with isDelta + origin), skips missed targets, lets dnd5e handle resistance. Only fires
+// when a recent attack told us who was hit (saves / direct damage stay manual). Once per message; the apply then drives the
+// impact cinematic + stylized-card update through the same dnd5e.applyDamage hook above.
+const _autoApplied = new Set();
+async function autoApplyDamage(message) {
+  try {
+    if (!game.user?.isGM || !game.settings.get(NS, 'autoApplyDamage')) return;
+    if (message.flags?.[NS]?.card) return;                          // our stylized card has no tray
+    if (message.flags?.dnd5e?.roll?.type !== 'damage') return;      // only damage cards (not attack/heal/check)
+    if (_autoApplied.has(message.id)) return;
+    if (!_attackHits.size || (Date.now() - _attackHitsAt) > 120000) return;   // need a recent attack's hit/miss
+    const rolls = message.rolls || []; if (!rolls.length) return;
+    const agg = game.dnd5e?.dice?.aggregateDamageRolls;
+    const dmgRolls = agg ? agg(rolls, { respectProperties: true }) : rolls;
+    const damages = dmgRolls.map(r => ({ value: Math.max(0, Math.round(Number(r?.total) || 0)), type: r?.options?.type || '', properties: new Set(r?.options?.properties || []) }));
+    if (!damages.length) return;
+    _autoApplied.add(message.id);
+    for (const t of (message.flags?.dnd5e?.targets || [])) {
+      const uuid = t?.uuid; if (!uuid || _attackHits.get(uuid) === false) continue;   // skip missed targets
+      let actor = null; try { actor = fromUuidSync(uuid); } catch (e) {}
+      try { await actor?.applyDamage?.(damages, { multiplier: 1, isDelta: true, origin: message, originatingMessage: message }); } catch (e) {}
+    }
+  } catch (e) { console.warn('DDB Integrator | autoApplyDamage', e); }
+}
+Hooks.on('createChatMessage', autoApplyDamage);
 // Seed the native damage tray's per-target multipliers (×0 for targets the attack missed). dnd5e's tray exposes the public
 // getTargetOptions(uuid) → mutating the live options object pre-presses the matching multiplier button + recalculates the
 // row total when the tray lazily builds (on scroll/open) — which always happens AFTER this render hook (verified in 5.3.3).
@@ -1796,7 +1822,8 @@ Hooks.once('init', () => {
   // ─── Cinematics ───
   game.settings.register(NS, 'cinematics', { name: 'Cinematic roll reveals', hint: 'Show a brief full-screen flourish when a roll lands — the roller portrait, the total, and the kind, with gold flair for a natural 20 and red for a natural 1. Shown to all players.', scope: 'world', config: true, type: Boolean, default: true });
   game.settings.register(NS, 'cinematicDuration', { name: 'Cinematic duration (seconds)', hint: 'How long a single-roll cinematic stays on screen before it fades (also sets the spacing between back-to-back reveals and the group result reveal). Group Check / Contest / Initiative gathering stay up until you finalize them.', scope: 'world', config: true, type: Number, range: { min: 1.5, max: 10, step: 0.5 }, default: 3.5 });
-  game.settings.register(NS, 'autoConfirmHits', { name: 'Attack hit / miss verdict', hint: 'On an attack, mark each target HIT or MISS — green or red — on the cinematic + the chat card, decided by the roll vs the target’s AC. Turn off to hide the verdict (a manual GM confirm is coming in a later update). GM only.', scope: 'world', config: true, type: Boolean, default: true });
+  game.settings.register(NS, 'autoConfirmHits', { name: 'Attack hit / miss verdict', hint: 'On an attack, mark each target HIT or MISS — green or red — on the cinematic + the chat card, decided by the roll vs the target’s AC. Turn OFF and you confirm each target’s hit/miss by hand on a cinematic prompt instead. GM only.', scope: 'world', config: true, type: Boolean, default: true });
+  game.settings.register(NS, 'autoApplyDamage', { name: 'Auto-apply damage (alpha)', hint: '⚠ Alpha. Automatically apply attack damage to your HIT targets as it rolls, so you don’t click the tray’s Apply button. Missed targets are skipped and resistances/vulnerabilities still apply. GM only, off by default. Saving-throw and direct-damage spells still need a manual Apply for now. Don’t also click Apply while this is on, or the damage lands twice.', scope: 'world', config: true, type: Boolean, default: false });
   // ─── Sound (per-client) ───
   // All sound state — on/off, volume, and a file per cue (incl. every damage type) — lives in this single object,
   // edited via the "Sound Effects" submenu below. Nothing else sits on the main settings page. Ships silent (all blank).
@@ -1814,7 +1841,7 @@ Hooks.once('init', () => {
   Hooks.on('renderSettingsConfig', (app, html) => {
     try {
       const root = (html?.[0]) || html; if (!root?.querySelector) return;
-      const SEC = { enabled: 'D&D Beyond Connection', ddbApplyCard: 'Cards', cinematics: 'Cinematics' };
+      const SEC = { enabled: 'D&D Beyond Connection', ddbApplyCard: 'Cards', cinematics: 'Cinematics', autoConfirmHits: 'Combat' };
       for (const [key, label] of Object.entries(SEC)) {
         const field = root.querySelector(`[name="${NS}.${key}"]`); const row = field?.closest('.form-group'); if (!row) continue;
         const h = document.createElement('h3'); h.textContent = label; h.className = 'ddbx-int-section';
@@ -1839,7 +1866,7 @@ Hooks.once('ready', () => {
       else if (m?.t === 'groupclear') clearGroupLocal();
     });
   } catch (e) {}
-  if (!game.user.isGM) { console.log('DDB Integrator | ready (v0.2.11)'); return; }
+  if (!game.user.isGM) { console.log('DDB Integrator | ready (v0.2.12)'); return; }
   window.DDBIntegrator = { reconnect, startOwnSocket, editMapping, editCookie, editSounds, fetchCampaignCharacters, startGroup, finalizeGroup, cancelGroup };
   // Replace/suppress Foundry's native dnd5e roll cards — this module posts its own. ONLY native ROLL cards are
   // touched (no item/usage interception, no automation): a GM roll renders our card too, then we keep the native
@@ -1890,5 +1917,5 @@ Hooks.once('ready', () => {
   // Insurance: force one scene-controls re-render now that everything is wired, in case the controls had already
   // painted. The top-level getSceneControlButtons hook is what makes the tools appear; this just guarantees a paint.
   try { ui.controls?.render?.(true); } catch (e) {}
-  console.log('DDB Integrator | ready (v0.2.11)');
+  console.log('DDB Integrator | ready (v0.2.12)');
 });
